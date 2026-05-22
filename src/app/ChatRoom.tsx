@@ -42,6 +42,9 @@ export default function ChatRoom(props: {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [isRunning, setIsRunning] = useState(false);
+  const [points, setPoints] = useState<Array<{ slug: string; display_name: string; points: number }>>([]);
+  const [turnError, setTurnError] = useState<string | null>(null);
 
   // ハイドレーション後にリアルタイムクロックへ切替
   useEffect(() => {
@@ -90,6 +93,92 @@ export default function ChatRoom(props: {
       clearInterval(t);
     };
   }, []);
+
+  // ポイント初期取得
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await fetch("/api/points", { cache: "no-store" });
+        if (!alive) return;
+        if (res.ok) {
+          const data = (await res.json()) as { points: typeof points };
+          setPoints(data.points);
+        }
+      } catch {
+        /* noop */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // ターン自動進行ループ
+  useEffect(() => {
+    if (!isRunning) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const wait = (ms: number) =>
+      new Promise<void>((resolve) => {
+        timer = setTimeout(() => resolve(), ms);
+      });
+
+    (async () => {
+      while (!cancelled) {
+        try {
+          const res = await fetch("/api/turn/next", { method: "POST", cache: "no-store" });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            setTurnError(data.error ?? `turn error ${res.status}`);
+            await wait(2500);
+            continue;
+          }
+          setTurnError(null);
+          const data = (await res.json()) as {
+            spoke: null | {
+              id: number;
+              speakerSlug: string;
+              speakerName: string;
+              text: string;
+              topicId: number | null;
+              createdAt: string;
+            };
+            points: typeof points;
+          };
+          if (data.points) setPoints(data.points);
+          if (data.spoke) {
+            const spoke = data.spoke;
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: spoke.id,
+                speakerKind: "character",
+                speakerName: spoke.speakerName,
+                text: spoke.text,
+                topicId: spoke.topicId,
+                createdAt: spoke.createdAt,
+              },
+            ]);
+            // 仮の発話時間：文字数 / 7文字毎秒 + 1秒の余白（TTS実装時に実音声長に差替）
+            const charCount = [...spoke.text].length;
+            const displayMs = Math.max(1500, charCount * (1000 / 7) + 1000);
+            await wait(displayMs);
+          } else {
+            await wait(1000);
+          }
+        } catch (e) {
+          setTurnError(e instanceof Error ? e.message : "loop error");
+          await wait(2500);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [isRunning]);
 
   const rotatedAtMs = new Date(topic.rotatedAt).getTime();
   const nextAtMs = new Date(topic.nextRotateAt).getTime();
@@ -163,9 +252,19 @@ export default function ChatRoom(props: {
         backgroundPosition: "center",
       }}
     >
-      {/* 右上 セッション + ログアウト */}
+      {/* 右上 セッション + 開始/停止 + ログアウト */}
       <div className="absolute top-3 right-4 flex items-center gap-3 text-sm text-white/80 z-10">
         <span>user: {props.login}</span>
+        <button
+          onClick={() => setIsRunning((v) => !v)}
+          className={`px-3 py-1 rounded border ${
+            isRunning
+              ? "bg-red-600/80 border-red-300/40 hover:bg-red-600"
+              : "bg-emerald-600/80 border-emerald-300/40 hover:bg-emerald-600"
+          }`}
+        >
+          {isRunning ? "停止" : "開始"}
+        </button>
         <LogoutButton />
       </div>
 
@@ -182,6 +281,19 @@ export default function ChatRoom(props: {
             style={{ width: `${progressPct}%` }}
           />
         </div>
+        {/* ポイント表示（デバッグ用） */}
+        {points.length > 0 && (
+          <div className="mt-2 flex gap-3 text-xs text-white/70 justify-center">
+            {points.map((p) => (
+              <span key={p.slug} className="bg-black/40 border border-white/10 px-2 py-0.5 rounded">
+                {p.display_name}: <span className="font-mono">{p.points}</span>
+              </span>
+            ))}
+          </div>
+        )}
+        {turnError && (
+          <div className="mt-1 text-center text-xs text-red-300">{turnError}</div>
+        )}
       </div>
 
       {/* キャラ会話 + 画像 */}

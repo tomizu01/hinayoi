@@ -3,8 +3,9 @@ import { readSession } from "@/lib/session";
 import { getRecentConversations, insertConversation } from "@/lib/conversation";
 import { applyReplacements, getAsrReplacements } from "@/lib/replacements";
 import { getCurrentTopic } from "@/lib/topic";
+import { applyMentionBonus, catchupTick, getAllPoints } from "@/lib/points";
 
-const USER_SPEAKER_NAME = "あなた";
+const USER_SPEAKER_NAME = "とみん";
 
 export async function GET(req: Request) {
   const session = await readSession();
@@ -35,12 +36,16 @@ export async function POST(req: Request) {
   const replaced = applyReplacements(trimmed, pairs);
 
   const topic = await getCurrentTopic();
+  // ポイントtickをキャッチアップ → 保存 → 名前+100（ユーザーは自分判定対象外なので全員チェック）
+  await catchupTick();
   const id = await insertConversation({
     speakerKind: "user",
     speakerName: USER_SPEAKER_NAME,
     text: replaced,
     topicId: topic.topicId || null,
   });
+  await applyMentionBonus(replaced);
+  const points = await getAllPoints();
 
   return NextResponse.json({
     id,
@@ -48,5 +53,6 @@ export async function POST(req: Request) {
     speakerName: USER_SPEAKER_NAME,
     text: replaced,
     topicId: topic.topicId || null,
+    points: points.map((p) => ({ slug: p.slug, display_name: p.display_name, points: p.points })),
   });
 }

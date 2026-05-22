@@ -90,4 +90,5 @@ INSERT IGNORE INTO tts_replacements (src, dst) VALUES
 -- seed: ASR置換例
 INSERT IGNORE INTO asr_replacements (src, dst) VALUES
   ('陽菜', 'ひな'),
-  ('小春', 'こはる');
+  ('小春', 'こはる'),
+  ('都民', 'とみん');

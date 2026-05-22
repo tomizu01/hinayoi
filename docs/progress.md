@@ -1,6 +1,6 @@
 # hinayoi 開発進捗
 
-最終更新: 2026-05-22
+最終更新: 2026-05-22（ステップ3完了）
 
 仕様書: [docs/hinayoi.md](./hinayoi.md)
 TTS仕様: [docs/elevenlabs-tts-api.md](./elevenlabs-tts-api.md)
@@ -51,28 +51,33 @@ TTS仕様: [docs/elevenlabs-tts-api.md](./elevenlabs-tts-api.md)
 - [x] 1.5秒毎に会話履歴ポーリング、キャラ毎の最新発言を表示
 - [x] テキスト送信 → POST → 即時UI反映
 
+### ステップ2: 会話ポイント管理
+- [x] 10秒毎 +15（catchup方式、`app_state.points_last_tick_at`）
+- [x] 初期値0-100ランダム（初回呼び出し時に `points_initialized` フラグで一度だけ）
+- [x] 名前含み判定で +100（**自分自身は除外**）
+- [x] 話者発言後 -100（最低0）
+- [x] 話者選定：100超ならその中からランダム、いなければ最大値（同値ランダム）
+
+### ステップ3: 話者決定 + Gemini 3.5 Flash 連携
+- [x] `gemini-3.5-flash` REST呼び出し（systemInstruction + user message形式、thinkingBudget=0、maxOutputTokens=2048）
+- [x] プロンプト組み立て（common + persona + 現在話題 + 履歴30件）
+- [x] サニタイズ（接頭辞除去、60字超切り詰め）
+- [x] 履歴DB保存 → 名前+100適用 → 話者-100適用
+- [x] `POST /api/turn/next` で1ターン進行
+- [x] ユーザー名 `とみん` で履歴保存（ひなの「お兄ちゃん」呼びはプロンプト側で処理）
+- [x] `都民→とみん` を asr_replacements に追加
+
+### UI
+- [x] 右上の「開始 / 停止」トグル → クライアント側ループで `/api/turn/next` を呼び続ける
+- [x] 仮の発話時間 = 文字数 / 7文字毎秒 + 1秒余白で次ターンを待機（後でTTS再生終了に置換）
+- [x] ポイント表示（デバッグ用、トピックバー下）
+- [x] turn エラー表示
+
 ---
 
 ## 未着手
 
-### ステップ2: 会話ポイント管理（仕様「キャラ毎の会話ポイント」）
-- [ ] 10秒ごとに全キャラ +15（サーバ側で実装。Cookieで「最後のtick時刻」を持つか、専用APIで「経過分を計算してまとめて加算」する形を想定）
-- [ ] 発言テキストに名前が「含まれている」キャラに +100（ユーザー発言・キャラ発言の両方、保存時に判定）
-- [ ] 発言生成後に話者のポイント -100（最低0）
-- [ ] ポイントの初期値 0–100 ランダム（リセット用APIも？）
-
-### ステップ3: 話者決定 + Gemini 3.5 Flash 連携
-- [ ] 話者選定：ポイント>100 のキャラからランダム、いなければ最大値
-- [ ] プロンプト組み立て
-  - `prompts/common.md`（共通指示）
-  - `prompts/{slug}.md`（性格設定、各キャラ）← **本文未記述。仮プロンプトを作るか要相談**
-  - 現在の話題
-  - 直近30件の履歴（話者＋内容）
-- [ ] `gemini-3.5-flash` 呼び出し → セリフ生成 → 履歴保存 → ポイント再計算
-- [ ] 自動駆動（次の話者を一定間隔で評価し続けるサーバループ or クライアント駆動）
-- [ ] レート制限 / リトライ方針
-
-### ステップ4: ElevenLabs TTS
+### ステップ4: ElevenLabs TTS（次のターゲット）
 - [ ] サーバプロキシ `/api/tts`（API キーをクライアントに露出させない）
 - [ ] TTS 置換適用後のテキストを渡す
 - [ ] `eleven_v3` / `stability=1.0` / 50文字以下推奨 / タイムアウト
@@ -118,27 +123,33 @@ TTS仕様: [docs/elevenlabs-tts-api.md](./elevenlabs-tts-api.md)
 │   │   ├── layout.tsx
 │   │   ├── globals.css
 │   │   ├── page.tsx                  # サーバ：初期データ取得 → ChatRoomへ
-│   │   ├── ChatRoom.tsx              # クライアント：話題/履歴/入力
+│   │   ├── ChatRoom.tsx              # クライアント：話題/履歴/入力/ターンループ
 │   │   ├── LogoutButton.tsx
 │   │   ├── login/page.tsx
 │   │   └── api/
 │   │       ├── auth/login/route.ts
 │   │       ├── auth/logout/route.ts
 │   │       ├── topic/current/route.ts
-│   │       └── conversations/route.ts
+│   │       ├── conversations/route.ts
+│   │       ├── points/route.ts        # GET 現在ポイント
+│   │       └── turn/next/route.ts     # POST 1ターン進行
 │   └── lib/
 │       ├── db.ts             # mysql2 プール
 │       ├── password.ts       # scrypt
 │       ├── session.ts        # JWT Cookie
 │       ├── topic.ts          # 3分ローテ管理
 │       ├── conversation.ts   # 履歴 GET/INSERT
-│       └── replacements.ts   # ASR/TTS 置換、30sキャッシュ
+│       ├── replacements.ts   # ASR/TTS 置換、30sキャッシュ
+│       ├── points.ts         # tick / +100 / -100 / 話者選定
+│       ├── prompts.ts        # prompts/*.md 読み込み（5sキャッシュ）
+│       ├── gemini.ts         # gemini-3.5-flash REST
+│       └── turn.ts           # 1ターン進行ロジック
 └── .env.local                # 機密。DB / SESSION / GEMINI / ELEVENLABS
 ```
 
 ---
 
-## 検証結果（ステップ1まで）
+## 検証結果（ステップ3まで）
 
 | 項目 | 結果 |
 |---|---|
@@ -148,13 +159,17 @@ TTS仕様: [docs/elevenlabs-tts-api.md](./elevenlabs-tts-api.md)
 | ログアウト後 `GET /` | 307 → `/login` |
 | 未認証 `GET /api/conversations` | 401 JSON |
 | `GET /api/topic/current` | 3分超過時に別話題に切替＋state永続化 |
-| `POST /api/conversations` | ASR置換適用（陽菜→ひな）、空文字は400 |
+| `POST /api/conversations` | ASR置換適用（陽菜→ひな、都民→とみん）、空文字は400、名前マッチ+100 |
 | ブラウザ画面 | 1920×1080 でハイドレーションエラーなく描画 |
+| `GET /api/points` | 初回でランダム初期化、以降経過秒数を10秒+15でcatchup |
+| `POST /api/turn/next` | Geminiが性格通りに発言生成、自然な対話継続、ポイント±適用 |
+| 自分の名前マッチ除外 | ひなが自分の発言に「ひな」を含めてもひなには+100されない ✓ |
 
 ---
 
-## 次に決めること
+## 次に決めること（ステップ4以降）
 
-1. **キャラの性格プロンプト本文**：仮プロンプトをこちらで書く / ユーザー側で記述するまで待つ
-2. **ステップ2・3 の進め方**：ポイント管理→話者決定→Gemini呼び出し を分けて作るか一括で作るか
-3. **自動駆動の方式**：「サーバ側に常駐ループを置く」 vs 「クライアントが一定間隔で `/api/turn/next` を叩いて生成をリクエスト」（PoCではクライアント駆動が楽）
+1. **TTS再生方式**：MP3 を Blob で受けてクライアントで `<audio>` 再生。生成→再生終了をターンループの待機トリガーに変える
+2. **再生中の表示**：タイプライター7文字/秒。発話中のキャラを強調（枠の色変える等）するかどうか
+3. **コスト管理**：開発中は「開始/停止」ボタンでループを切れる現状でOK。本格テスト時のレート上限・ウエイト調整は実機で
+4. **ユーザー音声入力 (Web Speech API)**：マイクトグルを入力欄に追加、認識結果に asr_replacements を適用してから POST
