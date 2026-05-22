@@ -554,9 +554,9 @@ export default function ChatRoom(props: {
           </div>
         ))}
         {isListening && (
-          <div className="inline-block bg-red-500/20 border border-red-300/50 px-3 py-1 rounded text-sm">
-            <span className="text-red-200 mr-2 animate-pulse">● 認識中</span>
-            <span className="text-white/85">{interim || "（話してください）"}</span>
+          <div className="inline-block bg-black/80 border border-red-300/80 px-3 py-1 rounded text-sm">
+            <span className="text-red-300 mr-2 animate-pulse">● 認識中</span>
+            <span className="text-white">{interim || "（話してください）"}</span>
           </div>
         )}
       </div>
