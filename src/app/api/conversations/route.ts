@@ -1,0 +1,52 @@
+import { NextResponse } from "next/server";
+import { readSession } from "@/lib/session";
+import { getRecentConversations, insertConversation } from "@/lib/conversation";
+import { applyReplacements, getAsrReplacements } from "@/lib/replacements";
+import { getCurrentTopic } from "@/lib/topic";
+
+const USER_SPEAKER_NAME = "あなた";
+
+export async function GET(req: Request) {
+  const session = await readSession();
+  if (!session) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const url = new URL(req.url);
+  const limitRaw = url.searchParams.get("limit");
+  const limit = limitRaw ? Number(limitRaw) : 30;
+  const items = await getRecentConversations(Number.isFinite(limit) ? limit : 30);
+  return NextResponse.json({ items });
+}
+
+export async function POST(req: Request) {
+  const session = await readSession();
+  if (!session) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+
+  const body = await req.json().catch(() => null);
+  const rawText = typeof body?.text === "string" ? body.text : "";
+  const trimmed = rawText.trim();
+  if (!trimmed) {
+    return NextResponse.json({ error: "本文が空です" }, { status: 400 });
+  }
+  if (trimmed.length > 500) {
+    return NextResponse.json({ error: "本文が長すぎます" }, { status: 400 });
+  }
+
+  // ASR置換を保存前に適用（仕様: 置換後にDB保存・ポイント判定を行う）
+  const pairs = await getAsrReplacements();
+  const replaced = applyReplacements(trimmed, pairs);
+
+  const topic = await getCurrentTopic();
+  const id = await insertConversation({
+    speakerKind: "user",
+    speakerName: USER_SPEAKER_NAME,
+    text: replaced,
+    topicId: topic.topicId || null,
+  });
+
+  return NextResponse.json({
+    id,
+    speakerKind: "user",
+    speakerName: USER_SPEAKER_NAME,
+    text: replaced,
+    topicId: topic.topicId || null,
+  });
+}
