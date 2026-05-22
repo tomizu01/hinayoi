@@ -2,9 +2,8 @@ import type { RowDataPacket } from "mysql2";
 import { getPool } from "./db";
 
 const TICK_MS = 10_000;
-const TICK_GAIN = 1;
+const TICK_GAIN = 10;
 const MENTION_GAIN = 100;
-const SPEAKER_LOSS = -100;
 const INIT_MIN = 0;
 const INIT_MAX = 100;
 const SPEAKER_THRESHOLD = 100;
@@ -88,9 +87,17 @@ export async function applyMentionBonus(text: string, excludeSlug?: string): Pro
   const [chars] = await pool.query<CharRow[]>(
     "SELECT id, slug, display_name FROM characters",
   );
+  // キャラ発言時（excludeSlug指定あり）は文の後半のみ判定する
+  // 例: 50文字なら25文字目～50文字目を対象。「○○さんはどうですか？」のような末尾の問いかけを拾う
+  let target = text;
+  if (excludeSlug) {
+    const arr = [...text];
+    const start = Math.floor(arr.length / 2);
+    target = arr.slice(start).join("");
+  }
   for (const c of chars) {
     if (excludeSlug && c.slug === excludeSlug) continue;
-    if (text.includes(c.display_name)) {
+    if (target.includes(c.display_name)) {
       await pool.query(
         "UPDATE characters SET points = points + ? WHERE id = ?",
         [MENTION_GAIN, c.id],
@@ -99,12 +106,9 @@ export async function applyMentionBonus(text: string, excludeSlug?: string): Pro
   }
 }
 
-export async function applySpeakerLoss(slug: string): Promise<void> {
+export async function resetSpeakerPoints(slug: string): Promise<void> {
   const pool = getPool();
-  await pool.query(
-    "UPDATE characters SET points = GREATEST(0, points + ?) WHERE slug = ?",
-    [SPEAKER_LOSS, slug],
-  );
+  await pool.query("UPDATE characters SET points = 0 WHERE slug = ?", [slug]);
 }
 
 export async function pickSpeaker(): Promise<CharPoint | null> {

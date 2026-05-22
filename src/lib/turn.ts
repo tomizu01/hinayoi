@@ -4,7 +4,7 @@ import {
   catchupTick,
   pickSpeaker,
   applyMentionBonus,
-  applySpeakerLoss,
+  resetSpeakerPoints,
   getAllPoints,
   type CharPoint,
 } from "./points";
@@ -108,8 +108,8 @@ export async function runTurn(): Promise<TurnResult> {
     topicId: topic.topicId || null,
   });
 
-  await applyMentionBonus(text, speaker.slug); // 自分自身は除外
-  await applySpeakerLoss(speaker.slug);
+  await applyMentionBonus(text, speaker.slug); // 自分自身は除外、後半のみ判定
+  await resetSpeakerPoints(speaker.slug);
 
   const points = await getAllPoints();
 
