@@ -2,7 +2,7 @@ import type { RowDataPacket } from "mysql2";
 import { getPool } from "./db";
 
 const TICK_MS = 10_000;
-const TICK_GAIN = 15;
+const TICK_GAIN = 1;
 const MENTION_GAIN = 100;
 const SPEAKER_LOSS = -100;
 const INIT_MIN = 0;

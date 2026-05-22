@@ -1,8 +1,33 @@
 "use client";
 
-import { useEffect, useMemo, useState, FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, FormEvent } from "react";
 import Image from "next/image";
 import LogoutButton from "./LogoutButton";
+
+// Web Speech API の最小型定義（標準DOM型に未収録のため）
+type SRAlternative = { transcript: string };
+type SRResult = { 0: SRAlternative; isFinal: boolean; length: number };
+type SREvent = { results: ArrayLike<SRResult>; resultIndex: number };
+type SRErrorEvent = { error: string; message?: string };
+interface SpeechRecognitionLike extends EventTarget {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  start(): void;
+  stop(): void;
+  abort(): void;
+  onresult: ((e: SREvent) => void) | null;
+  onerror: ((e: SRErrorEvent) => void) | null;
+  onend: (() => void) | null;
+  onstart: (() => void) | null;
+}
+type SRCtor = new () => SpeechRecognitionLike;
+
+function getSpeechRecognitionCtor(): SRCtor | null {
+  if (typeof window === "undefined") return null;
+  const w = window as unknown as { SpeechRecognition?: SRCtor; webkitSpeechRecognition?: SRCtor };
+  return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
+}
 
 export type ChatCharacter = {
   id: number;
@@ -45,11 +70,26 @@ export default function ChatRoom(props: {
   const [isRunning, setIsRunning] = useState(false);
   const [points, setPoints] = useState<Array<{ slug: string; display_name: string; points: number }>>([]);
   const [turnError, setTurnError] = useState<string | null>(null);
+  const [currentSpeech, setCurrentSpeech] = useState<{
+    slug: string;
+    displayName: string;
+    text: string;
+    startedAt: number;
+  } | null>(null);
+  const [isListening, setIsListening] = useState(false);
+  const [interim, setInterim] = useState("");
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const isListeningRef = useRef(false);
+  const sendingRef = useRef(false);
+  useEffect(() => {
+    isListeningRef.current = isListening;
+  }, [isListening]);
 
   // ハイドレーション後にリアルタイムクロックへ切替
   useEffect(() => {
     setNow(Date.now());
-    const t = setInterval(() => setNow(Date.now()), 250);
+    // 7文字/sのタイプライターを滑らかに描画するため 100ms 周期
+    const t = setInterval(() => setNow(Date.now()), 100);
     return () => clearInterval(t);
   }, []);
 
@@ -114,15 +154,57 @@ export default function ChatRoom(props: {
     };
   }, []);
 
-  // ターン自動進行ループ
+  // ターン自動進行ループ（TTS再生終了で次へ）
   useEffect(() => {
     if (!isRunning) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let activeAudio: HTMLAudioElement | null = null;
+    let activeUrl: string | null = null;
+
     const wait = (ms: number) =>
       new Promise<void>((resolve) => {
         timer = setTimeout(() => resolve(), ms);
       });
+
+    async function fetchAudio(speakerSlug: string, text: string): Promise<HTMLAudioElement> {
+      const res = await fetch("/api/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ speakerSlug, text }),
+      });
+      if (!res.ok) {
+        const detail = await res.text().catch(() => "");
+        throw new Error(`tts ${res.status} ${detail.slice(0, 120)}`);
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      activeUrl = url;
+      const audio = new Audio(url);
+      audio.preload = "auto";
+      return audio;
+    }
+
+    function playAndWait(audio: HTMLAudioElement, fallbackMs: number): Promise<void> {
+      return new Promise<void>((resolve) => {
+        let done = false;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          try {
+            audio.pause();
+          } catch {
+            /* noop */
+          }
+          resolve();
+        };
+        audio.onended = finish;
+        audio.onerror = finish;
+        const cap = setTimeout(finish, fallbackMs);
+        audio.addEventListener("ended", () => clearTimeout(cap), { once: true });
+        audio.play().catch(() => finish());
+      });
+    }
 
     (async () => {
       while (!cancelled) {
@@ -147,26 +229,62 @@ export default function ChatRoom(props: {
             points: typeof points;
           };
           if (data.points) setPoints(data.points);
-          if (data.spoke) {
-            const spoke = data.spoke;
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: spoke.id,
-                speakerKind: "character",
-                speakerName: spoke.speakerName,
-                text: spoke.text,
-                topicId: spoke.topicId,
-                createdAt: spoke.createdAt,
-              },
-            ]);
-            // 仮の発話時間：文字数 / 7文字毎秒 + 1秒の余白（TTS実装時に実音声長に差替）
+
+          if (!data.spoke) {
+            await wait(1000);
+            continue;
+          }
+
+          const spoke = data.spoke;
+
+          // 音声準備（取得中はキャラ枠を更新しない）
+          let audio: HTMLAudioElement | null = null;
+          try {
+            audio = await fetchAudio(spoke.speakerSlug, spoke.text);
+            activeAudio = audio;
+          } catch (e) {
+            setTurnError(e instanceof Error ? e.message : "tts error");
+            // 音声取得失敗時はテキストのみ表示
+          }
+
+          // 表示開始と再生開始を同時にトリガー
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: spoke.id,
+              speakerKind: "character",
+              speakerName: spoke.speakerName,
+              text: spoke.text,
+              topicId: spoke.topicId,
+              createdAt: spoke.createdAt,
+            },
+          ]);
+          setCurrentSpeech({
+            slug: spoke.speakerSlug,
+            displayName: spoke.speakerName,
+            text: spoke.text,
+            startedAt: Date.now(),
+          });
+
+          if (audio) {
+            // 文字数 × 0.5s を最低保証、25s をハードキャップ（ハルシネーション暴走対策）
+            const charCount = [...spoke.text].length;
+            const fallback = Math.min(25_000, Math.max(charCount * 500, 8_000));
+            await playAndWait(audio, fallback);
+            if (activeUrl) {
+              URL.revokeObjectURL(activeUrl);
+              activeUrl = null;
+            }
+            activeAudio = null;
+          } else {
+            // フォールバック：テキストの長さで待機
             const charCount = [...spoke.text].length;
             const displayMs = Math.max(1500, charCount * (1000 / 7) + 1000);
             await wait(displayMs);
-          } else {
-            await wait(1000);
           }
+
+          if (cancelled) break;
+          setCurrentSpeech(null);
         } catch (e) {
           setTurnError(e instanceof Error ? e.message : "loop error");
           await wait(2500);
@@ -177,6 +295,17 @@ export default function ChatRoom(props: {
     return () => {
       cancelled = true;
       if (timer) clearTimeout(timer);
+      if (activeAudio) {
+        try {
+          activeAudio.pause();
+        } catch {
+          /* noop */
+        }
+      }
+      if (activeUrl) {
+        URL.revokeObjectURL(activeUrl);
+      }
+      setCurrentSpeech(null);
     };
   }, [isRunning]);
 
@@ -204,25 +333,27 @@ export default function ChatRoom(props: {
     [messages],
   );
 
-  async function onSend(e?: FormEvent) {
-    e?.preventDefault();
-    const text = input.trim();
-    if (!text || sending) return;
+  async function sendUserText(text: string): Promise<boolean> {
+    const trimmed = text.trim();
+    if (!trimmed) return false;
+    if (sendingRef.current) return false;
+    sendingRef.current = true;
     setSending(true);
     setSendError(null);
     try {
       const res = await fetch("/api/conversations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text: trimmed }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         setSendError(data.error ?? "送信に失敗しました");
-        return;
+        return false;
       }
-      setInput("");
-      const newMsg = (await res.json()) as ChatMessage;
+      const newMsg = (await res.json()) as ChatMessage & {
+        points?: typeof points;
+      };
       setMessages((prev) => [
         ...prev,
         {
@@ -234,12 +365,121 @@ export default function ChatRoom(props: {
           createdAt: new Date().toISOString(),
         },
       ]);
+      if (newMsg.points) setPoints(newMsg.points);
+      return true;
     } catch {
       setSendError("通信エラーが発生しました");
+      return false;
     } finally {
       setSending(false);
+      sendingRef.current = false;
     }
   }
+
+  async function onSend(e?: FormEvent) {
+    e?.preventDefault();
+    const ok = await sendUserText(input);
+    if (ok) setInput("");
+  }
+
+  function stopListening() {
+    isListeningRef.current = false;
+    setIsListening(false);
+    setInterim("");
+    const rec = recognitionRef.current;
+    recognitionRef.current = null;
+    if (rec) {
+      rec.onend = null;
+      rec.onresult = null;
+      rec.onerror = null;
+      try {
+        rec.stop();
+      } catch {
+        /* noop */
+      }
+    }
+  }
+
+  function startListening() {
+    if (isListeningRef.current) return;
+    const Ctor = getSpeechRecognitionCtor();
+    if (!Ctor) {
+      setSendError("このブラウザは音声認識に未対応です（Chrome Desktopで開いてください）");
+      return;
+    }
+    const rec = new Ctor();
+    rec.lang = "ja-JP";
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.onresult = (e) => {
+      let interimText = "";
+      let finalText = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const r = e.results[i] as SRResult;
+        const t = r[0]?.transcript ?? "";
+        if (r.isFinal) finalText += t;
+        else interimText += t;
+      }
+      setInterim(interimText);
+      if (finalText.trim()) {
+        setInterim("");
+        void sendUserText(finalText);
+      }
+    };
+    rec.onerror = (ev) => {
+      if (ev.error === "not-allowed" || ev.error === "service-not-allowed") {
+        setSendError("マイク権限が許可されていません");
+        stopListening();
+      } else if (ev.error === "audio-capture") {
+        setSendError("マイクが見つかりません");
+        stopListening();
+      } else if (ev.error === "no-speech") {
+        // 無音タイムアウト。継続するため何もしない（onendで再起動される）
+      }
+    };
+    rec.onend = () => {
+      setInterim("");
+      // Chrome は数十秒で自動停止するので、ユーザーが止めていなければ再開
+      if (isListeningRef.current) {
+        try {
+          rec.start();
+        } catch {
+          /* すぐにrestartできない時は次のonend待ち */
+        }
+      }
+    };
+    try {
+      rec.start();
+      recognitionRef.current = rec;
+      isListeningRef.current = true;
+      setIsListening(true);
+      setSendError(null);
+    } catch {
+      setSendError("音声認識の起動に失敗しました");
+    }
+  }
+
+  function toggleListening() {
+    if (isListeningRef.current) stopListening();
+    else startListening();
+  }
+
+  // アンマウント時は確実に停止
+  useEffect(() => {
+    return () => {
+      isListeningRef.current = false;
+      const rec = recognitionRef.current;
+      recognitionRef.current = null;
+      if (rec) {
+        rec.onend = null;
+        try {
+          rec.stop();
+        } catch {
+          /* noop */
+        }
+      }
+    };
+  }, []);
 
   return (
     <div
@@ -299,23 +539,27 @@ export default function ChatRoom(props: {
       {/* キャラ会話 + 画像 */}
       <div className="absolute top-[160px] left-0 right-0 px-10">
         <div className="flex justify-between items-start">
-          <CharacterColumn chars={left} latest={latestByCharacter} />
+          <CharacterColumn chars={left} latest={latestByCharacter} current={currentSpeech} now={now} />
           <div className="w-[40px]" />
-          <CharacterColumn chars={right} latest={latestByCharacter} />
+          <CharacterColumn chars={right} latest={latestByCharacter} current={currentSpeech} now={now} />
         </div>
       </div>
 
-      {/* ユーザー最近の発言（小さく） */}
-      {recentUserMessages.length > 0 && (
-        <div className="absolute left-1/2 -translate-x-1/2 bottom-[88px] w-[1400px] z-10 space-y-1 text-right">
-          {recentUserMessages.map((m) => (
-            <div key={m.id} className="inline-block bg-white/15 border border-white/25 px-3 py-1 rounded text-sm">
-              <span className="text-white/60 mr-2">{m.speakerName}:</span>
-              <span>{m.text}</span>
-            </div>
-          ))}
-        </div>
-      )}
+      {/* ユーザー最近の発言（小さく） + 音声認識interim */}
+      <div className="absolute left-1/2 -translate-x-1/2 bottom-[88px] w-[1400px] z-10 space-y-1 text-right pointer-events-none">
+        {recentUserMessages.map((m) => (
+          <div key={m.id} className="inline-block bg-white/15 border border-white/25 px-3 py-1 rounded text-sm">
+            <span className="text-white/60 mr-2">{m.speakerName}:</span>
+            <span>{m.text}</span>
+          </div>
+        ))}
+        {isListening && (
+          <div className="inline-block bg-red-500/20 border border-red-300/50 px-3 py-1 rounded text-sm">
+            <span className="text-red-200 mr-2 animate-pulse">● 認識中</span>
+            <span className="text-white/85">{interim || "（話してください）"}</span>
+          </div>
+        )}
+      </div>
 
       {/* ユーザー入力欄 */}
       <form
@@ -340,11 +584,15 @@ export default function ChatRoom(props: {
         </button>
         <button
           type="button"
-          className="h-12 px-6 rounded bg-red-500 text-white font-semibold disabled:opacity-50"
-          disabled
-          title="後で実装"
+          onClick={toggleListening}
+          className={`h-12 px-6 rounded font-semibold border transition-colors ${
+            isListening
+              ? "bg-red-600 text-white border-red-300 ring-2 ring-red-300/60 animate-pulse"
+              : "bg-red-500 text-white border-red-300/40 hover:bg-red-600"
+          }`}
+          title={isListening ? "音声入力を停止" : "音声入力を開始"}
         >
-          音声入力
+          {isListening ? "🎤 認識中..." : "🎤 音声入力"}
         </button>
         {sendError && <span className="text-red-300 text-sm ml-2">{sendError}</span>}
       </form>
@@ -352,26 +600,60 @@ export default function ChatRoom(props: {
   );
 }
 
+const TYPEWRITER_CPS = 7;
+
 function CharacterColumn({
   chars,
   latest,
+  current,
+  now,
 }: {
   chars: ChatCharacter[];
   latest: Record<string, ChatMessage | undefined>;
+  current: {
+    slug: string;
+    displayName: string;
+    text: string;
+    startedAt: number;
+  } | null;
+  now: number;
 }) {
   return (
     <div className="flex gap-6">
       {chars.map((c) => {
-        const msg = latest[c.display_name];
+        const isSpeaking = current?.slug === c.slug;
+        let bubbleText = "";
+        if (isSpeaking && current) {
+          const fullChars = [...current.text];
+          const visible = Math.max(
+            0,
+            Math.min(fullChars.length, Math.floor(((now - current.startedAt) / 1000) * TYPEWRITER_CPS)),
+          );
+          bubbleText = fullChars.slice(0, visible).join("");
+        } else {
+          bubbleText = latest[c.display_name]?.text ?? "";
+        }
+        const bubbleBorder = isSpeaking
+          ? "border-yellow-300/80 ring-2 ring-yellow-300/40"
+          : "border-white/20";
+        const imageBorder = isSpeaking
+          ? "border-yellow-300/80 ring-2 ring-yellow-300/40"
+          : "border-white/15";
         return (
           <div key={c.id} className="w-[400px] flex flex-col items-center gap-3">
-            <div className="w-full h-[180px] rounded-md bg-black/55 border border-white/20 p-4 text-lg overflow-hidden">
-              <div className="text-white/60 text-sm mb-1">{c.display_name}</div>
-              <div className="text-white/90 whitespace-pre-wrap leading-snug">
-                {msg ? msg.text : ""}
+            <div className={`w-full h-[180px] rounded-md bg-black/55 border ${bubbleBorder} p-4 text-lg overflow-hidden transition-all`}>
+              <div className="text-white/60 text-sm mb-1 flex items-center gap-2">
+                <span>{c.display_name}</span>
+                {isSpeaking && <span className="text-yellow-300 text-xs">● 発言中</span>}
+              </div>
+              <div className="text-white/95 whitespace-pre-wrap leading-snug">
+                {bubbleText}
+                {isSpeaking && bubbleText.length < (current ? [...current.text].length : 0) && (
+                  <span className="inline-block w-1 h-5 bg-white/70 ml-0.5 align-middle animate-pulse" />
+                )}
               </div>
             </div>
-            <div className="w-full h-[600px] rounded-md bg-black/40 border border-white/15 overflow-hidden flex items-end justify-center">
+            <div className={`w-full h-[600px] rounded-md bg-black/40 border ${imageBorder} overflow-hidden flex items-end justify-center transition-all`}>
               <Image
                 src={`/sozai/${c.image_file}`}
                 alt={c.display_name}
