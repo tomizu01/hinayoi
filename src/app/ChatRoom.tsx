@@ -100,14 +100,33 @@ export default function ChatRoom(props: {
     return () => clearInterval(t);
   }, []);
 
-  // 話題期限切れで再取得
+  // 話題期限切れで再取得。
+  // サーバ側 getCurrentTopic はリクエスト時に時計を見てローテートする方式なので、
+  // クライアント時計がサーバより僅かに先行しているときに refreshTopic を1回だけ呼ぶと
+  // 「サーバ的にはまだ期限切れていない」と判定され同じ topic が返り、以降取りに行かなくなる。
+  // 期限切れの間は topic.nextRotateAt が進むまで1秒ごとに再取得を続ける。
   useEffect(() => {
     const nextAt = new Date(topic.nextRotateAt).getTime();
-    if (now >= nextAt) {
-      void refreshTopic();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [now >= new Date(topic.nextRotateAt).getTime()]);
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const pollAfterExpiry = () => {
+      timer = setTimeout(async () => {
+        if (cancelled) return;
+        await refreshTopic();
+        if (!cancelled) pollAfterExpiry();
+      }, 1000);
+    };
+    const initialDelay = Math.max(0, nextAt - Date.now());
+    timer = setTimeout(async () => {
+      if (cancelled) return;
+      await refreshTopic();
+      if (!cancelled) pollAfterExpiry();
+    }, initialDelay);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [topic.nextRotateAt]);
 
   async function refreshTopic() {
     try {
