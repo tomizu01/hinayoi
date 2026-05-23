@@ -680,7 +680,7 @@ function CharacterColumn({
             </div>
             <div className={`w-full h-[600px] rounded-md bg-black/40 border ${imageBorder} overflow-hidden flex items-end justify-center transition-all`}>
               <Image
-                src={`/sozai/${c.image_file}`}
+                src={`/sozai/${c.slug}_${isSpeaking ? "talk" : "default"}.png`}
                 alt={c.display_name}
                 width={400}
                 height={600}
