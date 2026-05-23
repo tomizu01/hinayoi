@@ -62,6 +62,10 @@ export default function ChatRoom(props: {
 }) {
   const [topic, setTopic] = useState(props.initialTopic);
   const [messages, setMessages] = useState(props.initialMessages);
+  // 起動時点の会話IDを記録し、UI表示ではこれらを除外する（前回会話の残留対策）
+  const [preSessionIds] = useState<Set<number>>(
+    () => new Set(props.initialMessages.map((m) => m.id)),
+  );
   // SSRと初回クライアントレンダリングで now を揃えるため、サーバが渡したtopic.nowで初期化
   const [now, setNow] = useState(() => new Date(props.initialTopic.now).getTime());
   const [input, setInput] = useState("");
@@ -78,6 +82,9 @@ export default function ChatRoom(props: {
   } | null>(null);
   const [isListening, setIsListening] = useState(false);
   const [interim, setInterim] = useState("");
+  // 表示用の各キャラ最新セリフ。messages とは独立にターンループが明示的に更新する
+  // （ポーリング由来の messages 更新で「音声再生前にバブル満杯」になる事故を防ぐ）
+  const [displayedLatest, setDisplayedLatest] = useState<Record<string, ChatMessage>>({});
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const isListeningRef = useRef(false);
   const sendingRef = useRef(false);
@@ -185,7 +192,11 @@ export default function ChatRoom(props: {
       return audio;
     }
 
-    function playAndWait(audio: HTMLAudioElement, fallbackMs: number): Promise<void> {
+    function playAndWait(
+      audio: HTMLAudioElement,
+      fallbackMs: number,
+      onStart?: () => void,
+    ): Promise<void> {
       return new Promise<void>((resolve) => {
         let done = false;
         const finish = () => {
@@ -200,6 +211,7 @@ export default function ChatRoom(props: {
         };
         audio.onended = finish;
         audio.onerror = finish;
+        if (onStart) audio.onplay = onStart;
         const cap = setTimeout(finish, fallbackMs);
         audio.addEventListener("ended", () => clearTimeout(cap), { once: true });
         audio.play().catch(() => finish());
@@ -247,30 +259,42 @@ export default function ChatRoom(props: {
             // 音声取得失敗時はテキストのみ表示
           }
 
-          // 表示開始と再生開始を同時にトリガー
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: spoke.id,
-              speakerKind: "character",
-              speakerName: spoke.speakerName,
-              text: spoke.text,
-              topicId: spoke.topicId,
-              createdAt: spoke.createdAt,
-            },
-          ]);
-          setCurrentSpeech({
-            slug: spoke.speakerSlug,
-            displayName: spoke.speakerName,
+          const msgForDisplay: ChatMessage = {
+            id: spoke.id,
+            speakerKind: "character",
+            speakerName: spoke.speakerName,
             text: spoke.text,
-            startedAt: Date.now(),
-          });
+            topicId: spoke.topicId,
+            createdAt: spoke.createdAt,
+          };
+
+          // 音声再生開始時にタイプライタ表示を開始（フェッチ中・再生待ちは何も表示しない）
+          const reveal = () => {
+            setCurrentSpeech({
+              slug: spoke.speakerSlug,
+              displayName: spoke.speakerName,
+              text: spoke.text,
+              startedAt: Date.now(),
+            });
+          };
 
           if (audio) {
             // 文字数 × 0.5s を最低保証、25s をハードキャップ（ハルシネーション暴走対策）
             const charCount = [...spoke.text].length;
             const fallback = Math.min(25_000, Math.max(charCount * 500, 8_000));
-            await playAndWait(audio, fallback);
+            let revealed = false;
+            await playAndWait(audio, fallback, () => {
+              if (revealed) return;
+              revealed = true;
+              reveal();
+            });
+            if (!revealed) {
+              // 音声が再生されなかった場合（失敗・即中断）でもテキストは表示
+              revealed = true;
+              reveal();
+              const displayMs = Math.max(1500, charCount * (1000 / 7) + 1000);
+              await wait(displayMs);
+            }
             if (activeUrl) {
               URL.revokeObjectURL(activeUrl);
               activeUrl = null;
@@ -278,12 +302,16 @@ export default function ChatRoom(props: {
             activeAudio = null;
           } else {
             // フォールバック：テキストの長さで待機
+            reveal();
             const charCount = [...spoke.text].length;
             const displayMs = Math.max(1500, charCount * (1000 / 7) + 1000);
             await wait(displayMs);
           }
 
           if (cancelled) break;
+          // 発話終了：表示用latestを更新し、同じバッチで currentSpeech をクリアする
+          // （isSpeaking=false への遷移と「latestに新セリフが入る」を同一レンダで起こすため）
+          setDisplayedLatest((prev) => ({ ...prev, [spoke.speakerName]: msgForDisplay }));
           setCurrentSpeech(null);
         } catch (e) {
           setTurnError(e instanceof Error ? e.message : "loop error");
@@ -318,19 +346,16 @@ export default function ChatRoom(props: {
   const left = useMemo(() => props.characters.filter((c) => c.position <= 2), [props.characters]);
   const right = useMemo(() => props.characters.filter((c) => c.position >= 3), [props.characters]);
 
-  const latestByCharacter = useMemo(() => {
-    const map: Record<string, ChatMessage | undefined> = {};
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const m = messages[i];
-      if (m.speakerKind !== "character") continue;
-      if (!map[m.speakerName]) map[m.speakerName] = m;
-    }
-    return map;
-  }, [messages]);
+  // バブル表示は displayedLatest（ターンループが明示的に管理）にのみ依存させる
+  // ポーリングや起動時の messages からは派生させない
+  const latestByCharacter = displayedLatest;
 
   const recentUserMessages = useMemo(
-    () => messages.filter((m) => m.speakerKind === "user").slice(-2),
-    [messages],
+    () =>
+      messages
+        .filter((m) => m.speakerKind === "user" && !preSessionIds.has(m.id))
+        .slice(-2),
+    [messages, preSessionIds],
   );
 
   async function sendUserText(text: string): Promise<boolean> {
@@ -548,13 +573,13 @@ export default function ChatRoom(props: {
       {/* ユーザー最近の発言（小さく） + 音声認識interim */}
       <div className="absolute left-1/2 -translate-x-1/2 bottom-[88px] w-[1400px] z-10 space-y-1 text-right pointer-events-none">
         {recentUserMessages.map((m) => (
-          <div key={m.id} className="inline-block bg-white/15 border border-white/25 px-3 py-1 rounded text-sm">
+          <div key={m.id} className="inline-block bg-white/15 border border-white/25 px-3 py-1 rounded" style={{ fontSize: "1.3125rem" }}>
             <span className="text-white/60 mr-2">{m.speakerName}:</span>
             <span>{m.text}</span>
           </div>
         ))}
         {isListening && (
-          <div className="inline-block bg-black/80 border border-red-300/80 px-3 py-1 rounded text-sm">
+          <div className="inline-block bg-black/80 border border-red-300/80 px-3 py-1 rounded" style={{ fontSize: "1.3125rem" }}>
             <span className="text-red-300 mr-2 animate-pulse">● 認識中</span>
             <span className="text-white">{interim || "（話してください）"}</span>
           </div>
@@ -643,10 +668,10 @@ function CharacterColumn({
           <div key={c.id} className="w-[400px] flex flex-col items-center gap-3">
             <div className={`w-full h-[180px] rounded-md bg-black/55 border ${bubbleBorder} p-4 text-lg overflow-hidden transition-all`}>
               <div className="text-white/60 text-sm mb-1 flex items-center gap-2">
-                <span>{c.display_name}</span>
+                <span className="font-bold" style={{ fontSize: "1.75rem" }}>{c.display_name}</span>
                 {isSpeaking && <span className="text-yellow-300 text-xs">● 発言中</span>}
               </div>
-              <div className="text-white/95 whitespace-pre-wrap leading-snug">
+              <div className="text-white/95 whitespace-pre-wrap leading-snug" style={{ fontSize: "1.5rem" }}>
                 {bubbleText}
                 {isSpeaking && bubbleText.length < (current ? [...current.text].length : 0) && (
                   <span className="inline-block w-1 h-5 bg-white/70 ml-0.5 align-middle animate-pulse" />
