@@ -1,6 +1,6 @@
 # hinayoi 開発進捗
 
-最終更新: 2026-05-22（ステップ5完了）
+最終更新: 2026-05-23（APNG対応 + 話題ローテ不具合修正 + 表示サイズ調整）
 
 仕様書: [docs/hinayoi.md](./hinayoi.md)
 TTS仕様: [docs/elevenlabs-tts-api.md](./elevenlabs-tts-api.md)
@@ -40,7 +40,7 @@ TTS仕様: [docs/elevenlabs-tts-api.md](./elevenlabs-tts-api.md)
 - [x] ハイドレーションエラー対策（サーバ時刻でクライアント `now` を初期化）
 
 ### API
-- [x] `GET /api/topic/current` — 3分超過で自動切替・state永続化・直前と同じ話題は除外
+- [x] `GET /api/topic/current` — 4分超過で自動切替・state永続化・直前と同じ話題は除外
 - [x] `GET /api/conversations?limit=30` — 古い順
 - [x] `POST /api/conversations` — ユーザー発言保存。ASR 置換を保存前に適用、現在の話題IDを紐付け
 - [x] ASR/TTS 置換リストはDB保管、30秒キャッシュ、長い文字列優先
@@ -90,15 +90,29 @@ TTS仕様: [docs/elevenlabs-tts-api.md](./elevenlabs-tts-api.md)
 - [x] 権限エラー / マイク無し のメッセージ表示
 - [x] アンマウント時に確実に停止
 
+### APNG対応・表示調整・話題ローテ修正（2026-05-23）
+- [x] キャラ画像を `{slug}_default.png` / `{slug}_talk.png` の2系統に分離（ChatRoom.tsx の CharacterColumn）
+  - 通常時は `_default`、`currentSpeech.slug === c.slug` の間だけ `_talk` に差し替え
+  - APNG のループは画像ファイル側のループカウントに任せ、ブラウザに自動再生させる（`unoptimized` 指定済み）
+  - src 切替時にフレーム0から再生されるため、発話開始と口パク開始がそろう
+- [x] セリフ欄キャラ名を 1.75rem + bold（元の text-sm の約2倍）
+- [x] セリフ本体フォントを 1.5rem（元の text-lg の約1.3倍、当初1.5倍で枠を僅かにはみ出したため微調整）
+- [x] ユーザー直近発言／音声認識 interim 表示を 1.3125rem（元の text-sm の1.5倍）
+- [x] **bugfix**：話題が残り0秒になっても表示が切替らない不具合を修正
+  - 旧実装は `useEffect` の依存配列を `now >= nextRotateAt` の **真偽値** にしていた
+  - クライアント時計がサーバより数百ms先行していると、最初の `refreshTopic()` でサーバが「まだ期限切れていない」と判定して同じ topic を返し、`topic.nextRotateAt` が変わらず dep が `true` のまま固定 → 二度と再取得しなくなる
+  - 修正後は `topic.nextRotateAt` ちょうどに setTimeout で1回目を発火し、同じ topic が返ってきた場合は 1 秒間隔で `refreshTopic()` をリトライ。新しい `nextRotateAt` が返るとエフェクトが再 mount してリトライ停止
+
 ---
 
 ## 未着手
 
 ### その他（後回し）
-- [ ] APNG 対応の確認・口パク差し替えなどの演出
 - [ ] レート制限の監視（Gemini 3.5 Flash / ElevenLabs Pro）
 - [ ] 長時間連続テスト用のセーフガード（コスト・ハルシネーション）
 - [ ] TTS再生中はマイクをミュート（エコーフィードバック防止）するか、ヘッドホン運用とするか
+- [ ] `/api/turn/next` のレスポンスに含まれる topic 情報を ChatRoom 側でも `setTopic` して、`/api/topic/current` への往復を減らす（任意の最適化）
+- [ ] characters.image_file カラムは現状未参照になっているので、整理（カラム削除 or default/talk 両方を持たせる）するか判断
 
 ---
 
@@ -139,7 +153,7 @@ TTS仕様: [docs/elevenlabs-tts-api.md](./elevenlabs-tts-api.md)
 │       ├── db.ts             # mysql2 プール
 │       ├── password.ts       # scrypt
 │       ├── session.ts        # JWT Cookie
-│       ├── topic.ts          # 3分ローテ管理
+│       ├── topic.ts          # 4分ローテ管理
 │       ├── conversation.ts   # 履歴 GET/INSERT
 │       ├── replacements.ts   # ASR/TTS 置換、30sキャッシュ
 │       ├── points.ts         # tick / +100 / -100 / 話者選定
@@ -160,7 +174,7 @@ TTS仕様: [docs/elevenlabs-tts-api.md](./elevenlabs-tts-api.md)
 | 間違いログイン | 401 |
 | ログアウト後 `GET /` | 307 → `/login` |
 | 未認証 `GET /api/conversations` | 401 JSON |
-| `GET /api/topic/current` | 3分超過時に別話題に切替＋state永続化 |
+| `GET /api/topic/current` | 4分超過時に別話題に切替＋state永続化 |
 | `POST /api/conversations` | ASR置換適用（陽菜→ひな、都民→とみん）、空文字は400、名前マッチ+100 |
 | ブラウザ画面 | 1920×1080 でハイドレーションエラーなく描画 |
 | `GET /api/points` | 初回でランダム初期化、以降経過秒数を10秒+1でcatchup |

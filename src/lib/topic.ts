@@ -1,7 +1,7 @@
 import type { RowDataPacket } from "mysql2";
 import { getPool } from "./db";
 
-const TOPIC_ROTATE_MS = 3 * 60 * 1000;
+const TOPIC_ROTATE_MS = 4 * 60 * 1000;
 
 const KEY_TOPIC_ID = "current_topic_id";
 const KEY_ROTATED_AT = "topic_rotated_at";
