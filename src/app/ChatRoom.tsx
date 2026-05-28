@@ -570,10 +570,10 @@ export default function ChatRoom(props: {
         backgroundPosition: "center",
       }}
     >
-      {/* 左上 残り時間警告（残り5分以下で表示） */}
+      {/* 残り時間警告（残り5分以下で表示） — viewport 固定で確実に画面内に出す */}
       {showFiveMinWarning && (
-        <div className="absolute top-3 left-4 z-20 select-none animate-pulse">
-          <div className="bg-black/80 border-2 border-red-400 text-red-400 font-bold px-4 py-2 rounded-md shadow-lg" style={{ fontSize: "1.5rem" }}>
+        <div className="fixed top-3 left-1/2 -translate-x-1/2 z-50 select-none animate-pulse pointer-events-none">
+          <div className="bg-black/85 border-2 border-red-400 text-red-300 font-bold px-6 py-2 rounded-md shadow-lg" style={{ fontSize: "1.75rem" }}>
             ⚠ お会計まで残り5分
           </div>
         </div>
