@@ -37,10 +37,17 @@ CREATE TABLE IF NOT EXISTS conversations (
   speaker_name VARCHAR(32) NOT NULL,
   text TEXT NOT NULL,
   topic_id INT UNSIGNED NULL,
+  nomikai_session_id VARCHAR(36) NULL,
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
-  KEY idx_conversations_created_at (created_at)
+  KEY idx_conversations_created_at (created_at),
+  KEY idx_conversations_nomikai_session (nomikai_session_id, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 既存DBの移行:
+--   ALTER TABLE conversations
+--     ADD COLUMN nomikai_session_id VARCHAR(36) NULL AFTER topic_id,
+--     ADD KEY idx_conversations_nomikai_session (nomikai_session_id, id);
 
 -- TTS用置換リスト
 CREATE TABLE IF NOT EXISTS tts_replacements (

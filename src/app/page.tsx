@@ -1,5 +1,6 @@
 import type { RowDataPacket } from "mysql2";
 import { readSession } from "@/lib/session";
+import { getNomikaiSessionId } from "@/lib/nomikai";
 import { getPool } from "@/lib/db";
 import { getCurrentTopic } from "@/lib/topic";
 import { getRecentConversations } from "@/lib/conversation";
@@ -17,10 +18,11 @@ async function loadCharacters(): Promise<ChatCharacter[]> {
 
 export default async function HomePage() {
   const session = await readSession();
+  const nomikaiSessionId = await getNomikaiSessionId();
   const [characters, topic, messages] = await Promise.all([
     loadCharacters(),
     getCurrentTopic(),
-    getRecentConversations(30),
+    getRecentConversations(nomikaiSessionId, 30),
   ]);
   return (
     <ChatRoom

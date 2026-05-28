@@ -43,7 +43,7 @@ function sanitizeText(raw: string, speakerName: string): string {
   return t;
 }
 
-export async function runTurn(): Promise<TurnResult> {
+export async function runTurn(nomikaiSessionId: string | null): Promise<TurnResult> {
   await catchupTick();
   const topic = await getCurrentTopic();
   const speaker = await pickSpeaker();
@@ -54,7 +54,7 @@ export async function runTurn(): Promise<TurnResult> {
   }
 
   const [history, common, persona] = await Promise.all([
-    getRecentConversations(30),
+    getRecentConversations(nomikaiSessionId, 30),
     getCommonPrompt(),
     getCharacterPrompt(speaker.slug),
   ]);
@@ -106,6 +106,7 @@ export async function runTurn(): Promise<TurnResult> {
     speakerName: speaker.display_name,
     text,
     topicId: topic.topicId || null,
+    nomikaiSessionId,
   });
 
   await applyMentionBonus(text, speaker.slug); // 自分自身は除外、後半のみ判定

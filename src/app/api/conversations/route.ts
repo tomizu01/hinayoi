@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { readSession } from "@/lib/session";
+import { getNomikaiSessionId } from "@/lib/nomikai";
 import { getRecentConversations, insertConversation } from "@/lib/conversation";
 import { applyReplacements, getAsrReplacements } from "@/lib/replacements";
 import { getCurrentTopic } from "@/lib/topic";
@@ -13,7 +14,11 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const limitRaw = url.searchParams.get("limit");
   const limit = limitRaw ? Number(limitRaw) : 30;
-  const items = await getRecentConversations(Number.isFinite(limit) ? limit : 30);
+  const nomikaiSessionId = await getNomikaiSessionId();
+  const items = await getRecentConversations(
+    nomikaiSessionId,
+    Number.isFinite(limit) ? limit : 30,
+  );
   return NextResponse.json({ items });
 }
 
@@ -36,6 +41,7 @@ export async function POST(req: Request) {
   const replaced = applyReplacements(trimmed, pairs);
 
   const topic = await getCurrentTopic();
+  const nomikaiSessionId = await getNomikaiSessionId();
   // ポイントtickをキャッチアップ → 保存 → 名前+100（ユーザーは自分判定対象外なので全員チェック）
   await catchupTick();
   const id = await insertConversation({
@@ -43,6 +49,7 @@ export async function POST(req: Request) {
     speakerName: USER_SPEAKER_NAME,
     text: replaced,
     topicId: topic.topicId || null,
+    nomikaiSessionId,
   });
   await applyMentionBonus(replaced);
   const points = await getAllPoints();
