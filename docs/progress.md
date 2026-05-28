@@ -1,6 +1,6 @@
 # hinayoi 開発進捗
 
-最終更新: 2026-05-28（飲み会セッション導入 + 複数アカウント対応 + 追加注文タイム + per-session state 化）
+最終更新: 2026-05-28（飲み会セッション導入 + 複数アカウント対応 + 追加注文タイム + per-session state 化 + ラストオーダー/終了イベント）
 
 仕様書: [docs/hinayoi.md](./hinayoi.md)
 TTS仕様: [docs/elevenlabs-tts-api.md](./elevenlabs-tts-api.md)
@@ -158,6 +158,55 @@ DELETE FROM app_state WHERE k IN (
 );
 ```
 
+### ラストオーダー/終了イベント（2026-05-28 追加）
+
+α版仕様: セッション最大時間を 1 時間固定とし、自然な流れで飲み会を終了させる。
+
+- [x] `current_topic_kind` ENUM に `closing` / `ended` を追加（schema.sql 更新 + 既存DBに ALTER 適用）
+- [x] `TopicInfo` に `sessionEndAt` を追加。`getCurrentTopic` で `nomikai_sessions.created_at + 1時間` をセッション終了予定時刻として算出
+- [x] 残り5分以下で話題バーの左隣に「残り5分▼」赤バッジ（fixed配置・パルス点滅、`closing`/`ended` 中は非表示）
+- [x] セッション終了予定時刻を超えた次の話題ローテーション時に `closing` に遷移し、`text="飲み会終了"` で 2 分間継続
+- [x] `closing` 中は turn.ts のプロンプト最優先で「楽しかった気持ち・感謝・別れの挨拶」を指示
+- [x] 2 分経過で `ended` に遷移（永続終端、ローテートしない）
+- [x] `ended` でクライアントが画面全面に半透明グレーのオーバーレイ + 「この飲み会は終了しました」表示
+- [x] `ended` 中は自動進行ループ・音声認識・テキスト入力・送信ボタン全て無効化
+- [x] `ended` 遷移時に発話中の音声を即停止、キャラ画像も `_default` に戻す
+  - `playAndWait` で `audio.onpause` を resolve トリガに追加（外部 pause で即座にループ脱出）
+  - `fetchAudio` await 直後の `cancelled` チェックで、終了遷移直後に取得完了した音声を再生させない
+  - `reveal()` 内の `cancelled` チェックでクリーンアップ後の currentSpeech 再セットを抑止
+- [x] サーバ API ガード: `POST /api/turn/next` は `ended` で `spoke: null`、`POST /api/conversations` は `ended` で 403
+
+マイグレーション SQL:
+```sql
+ALTER TABLE nomikai_sessions
+  MODIFY current_topic_kind ENUM('normal','order','closing','ended') NOT NULL DEFAULT 'normal';
+```
+
+テスト方法（手動UPDATE）:
+```sql
+-- ①「残り5分」表示
+UPDATE nomikai_sessions SET created_at = DATE_SUB(NOW(3), INTERVAL 56 MINUTE) WHERE id='<SID>';
+-- ② 即 closing 遷移
+UPDATE nomikai_sessions
+   SET created_at = DATE_SUB(NOW(3), INTERVAL 61 MINUTE),
+       topic_rotated_at = DATE_SUB(NOW(3), INTERVAL 10 MINUTE)
+ WHERE id='<SID>';
+-- ③ 即 ended 遷移（closing 行で実行）
+UPDATE nomikai_sessions
+   SET current_topic_kind='closing',
+       topic_rotated_at = DATE_SUB(NOW(3), INTERVAL 3 MINUTE),
+       current_topic_id = NULL
+ WHERE id='<SID>';
+-- やり直し
+UPDATE nomikai_sessions
+   SET created_at = NOW(3),
+       current_topic_kind = 'normal',
+       current_topic_id = NULL,
+       topic_rotated_at = NULL,
+       topic_normals_played = 0
+ WHERE id='<SID>';
+```
+
 ### APNG対応・表示調整・話題ローテ修正（2026-05-23）
 - [x] キャラ画像を `{slug}_default.png` / `{slug}_talk.png` の2系統に分離（ChatRoom.tsx の CharacterColumn）
   - 通常時は `_default`、`currentSpeech.slug === c.slug` の間だけ `_talk` に差し替え
@@ -291,4 +340,4 @@ DELETE FROM app_state WHERE k IN (
 6. **長時間運用テスト**：レートリミット観察・コスト確認
 7. **話題切替の通常4分が一時的に短縮中**: `src/lib/topic.ts` の `NORMAL_DURATION_MS` を本番値に戻す（4分）
 8. **古いセッション行のクリーンアップ**: `nomikai_sessions` を期限切れで掃除する仕組み（任意）
-9. **ラストオーダー/終了イベント**: 飲み会の幕引きフックは未実装
+9. ~~ラストオーダー/終了イベント~~（2026-05-28 完了）
