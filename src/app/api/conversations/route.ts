@@ -38,11 +38,11 @@ export async function POST(req: Request) {
   const pairs = await getAsrReplacements();
   const replaced = applyReplacements(trimmed, pairs);
 
-  const topic = await getCurrentTopic();
   const nomikaiSessionId = await getNomikaiSessionId();
+  const topic = await getCurrentTopic(nomikaiSessionId);
   const speakerName = session.nickname;
   // ポイントtickをキャッチアップ → 保存 → 名前+100（ユーザーは自分判定対象外なので全員チェック）
-  await catchupTick();
+  await catchupTick(nomikaiSessionId);
   const id = await insertConversation({
     speakerKind: "user",
     speakerName,
@@ -50,8 +50,8 @@ export async function POST(req: Request) {
     topicId: topic.topicId || null,
     nomikaiSessionId,
   });
-  await applyMentionBonus(replaced);
-  const points = await getAllPoints();
+  await applyMentionBonus(nomikaiSessionId, replaced);
+  const points = await getAllPoints(nomikaiSessionId);
 
   return NextResponse.json({
     id,

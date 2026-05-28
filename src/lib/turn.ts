@@ -55,12 +55,12 @@ export async function runTurn(
   nomikaiSessionId: string | null,
   nickname: string,
 ): Promise<TurnResult> {
-  await catchupTick();
-  const topic = await getCurrentTopic();
-  const speaker = await pickSpeaker();
+  await catchupTick(nomikaiSessionId);
+  const topic = await getCurrentTopic(nomikaiSessionId);
+  const speaker = await pickSpeaker(nomikaiSessionId);
 
   if (!speaker) {
-    const points = await getAllPoints();
+    const points = await getAllPoints(nomikaiSessionId);
     return { spoke: null, points: projectPoints(points), topic: { topicId: topic.topicId, text: topic.text } };
   }
 
@@ -134,7 +134,7 @@ export async function runTurn(
     raw = await generateContent({ systemInstruction, userMessage });
   } catch (e) {
     console.error("Gemini failed:", e);
-    const points = await getAllPoints();
+    const points = await getAllPoints(nomikaiSessionId);
     return { spoke: null, points: projectPoints(points), topic: { topicId: topic.topicId, text: topic.text } };
   }
 
@@ -148,10 +148,10 @@ export async function runTurn(
     nomikaiSessionId,
   });
 
-  await applyMentionBonus(text, speaker.slug); // 自分自身は除外、後半のみ判定
-  await resetSpeakerPoints(speaker.slug);
+  await applyMentionBonus(nomikaiSessionId, text, speaker.slug); // 自分自身は除外、後半のみ判定
+  await resetSpeakerPoints(nomikaiSessionId, speaker.slug);
 
-  const points = await getAllPoints();
+  const points = await getAllPoints(nomikaiSessionId);
 
   return {
     spoke: {

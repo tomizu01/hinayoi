@@ -25,9 +25,29 @@ CREATE TABLE IF NOT EXISTS characters (
   voice_id VARCHAR(64) NOT NULL,
   image_file VARCHAR(64) NOT NULL,
   position TINYINT UNSIGNED NOT NULL,
-  points INT NOT NULL DEFAULT 0,
   PRIMARY KEY (id),
   UNIQUE KEY uk_characters_slug (slug)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 飲み会セッション（1回の飲み会＝1行）
+CREATE TABLE IF NOT EXISTS nomikai_sessions (
+  id VARCHAR(36) NOT NULL,
+  user_id INT UNSIGNED NULL,
+  current_topic_id INT UNSIGNED NULL,
+  current_topic_kind ENUM('normal','order') NOT NULL DEFAULT 'normal',
+  topic_rotated_at DATETIME(3) NULL,
+  topic_normals_played INT UNSIGNED NOT NULL DEFAULT 0,
+  points_last_tick_at DATETIME(3) NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 飲み会セッションごとのキャラポイント
+CREATE TABLE IF NOT EXISTS nomikai_session_character_points (
+  nomikai_session_id VARCHAR(36) NOT NULL,
+  character_id INT UNSIGNED NOT NULL,
+  points INT NOT NULL DEFAULT 0,
+  PRIMARY KEY (nomikai_session_id, character_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS topics (
@@ -82,11 +102,18 @@ CREATE TABLE IF NOT EXISTS app_state (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- seed: characters
-INSERT IGNORE INTO characters (slug, display_name, voice_id, image_file, position, points) VALUES
-  ('hiyori', 'ひより', 'OSwaPSNdfituxkWcjlkR', 'hiyori.png', 1, 0),
-  ('misaki', 'みさき', 'ugYcuAusTuWCSOpJD0Xd', 'misaki.png', 2, 0),
-  ('koharu', 'こはる', 'hMK7c1GPJmptCzI4bQIu', 'koharu.png', 3, 0),
-  ('hina',   'ひな',   'lhTvHflPVOqgSWyuWQry', 'hina.png',   4, 0);
+INSERT IGNORE INTO characters (slug, display_name, voice_id, image_file, position) VALUES
+  ('hiyori', 'ひより', 'OSwaPSNdfituxkWcjlkR', 'hiyori.png', 1),
+  ('misaki', 'みさき', 'ugYcuAusTuWCSOpJD0Xd', 'misaki.png', 2),
+  ('koharu', 'こはる', 'hMK7c1GPJmptCzI4bQIu', 'koharu.png', 3),
+  ('hina',   'ひな',   'lhTvHflPVOqgSWyuWQry', 'hina.png',   4);
+
+-- 既存DBの per-session 化移行 (一度だけ実行):
+--   ALTER TABLE characters DROP COLUMN points;
+--   DELETE FROM app_state WHERE k IN (
+--     'points_initialized', 'points_last_tick_at',
+--     'current_topic_id', 'current_topic_kind', 'topic_rotated_at', 'topic_normals_played'
+--   );
 
 -- seed: topics (placeholder, 後で増やせる)
 INSERT IGNORE INTO topics (id, text) VALUES

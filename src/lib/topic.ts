@@ -1,15 +1,11 @@
 import type { RowDataPacket } from "mysql2";
 import { getPool } from "./db";
+import { ensureNomikaiSession } from "./nomikai";
 
 const NORMAL_DURATION_MS = 1 * 60 * 4 * 1000;
 const ORDER_DURATION_MS = 1 * 30 * 1000;
 const NORMALS_BEFORE_ORDER = 3;
 const ORDER_TIME_TEXT = "追加注文タイム";
-
-const KEY_TOPIC_ID = "current_topic_id";
-const KEY_TOPIC_KIND = "current_topic_kind"; // 'normal' | 'order'
-const KEY_ROTATED_AT = "topic_rotated_at";
-const KEY_NORMALS_PLAYED = "topic_normals_played";
 
 export type TopicKind = "normal" | "order";
 
@@ -22,29 +18,57 @@ export type TopicInfo = {
   now: string; // ISO
 };
 
-type StateRow = RowDataPacket & { k: string; v: string };
+type SessionRow = RowDataPacket & {
+  current_topic_id: number | null;
+  current_topic_kind: TopicKind;
+  topic_rotated_at: Date | null;
+  topic_normals_played: number;
+};
+
 type TopicRow = RowDataPacket & { id: number; text: string };
 
-async function readState(): Promise<Record<string, string>> {
+async function readSession(sessionId: string): Promise<SessionRow | null> {
   const pool = getPool();
-  const [rows] = await pool.query<StateRow[]>(
-    "SELECT k, v FROM app_state WHERE k IN (?, ?, ?, ?)",
-    [KEY_TOPIC_ID, KEY_TOPIC_KIND, KEY_ROTATED_AT, KEY_NORMALS_PLAYED],
+  const [rows] = await pool.query<SessionRow[]>(
+    `SELECT current_topic_id, current_topic_kind, topic_rotated_at, topic_normals_played
+       FROM nomikai_sessions WHERE id = ? LIMIT 1`,
+    [sessionId],
   );
-  const map: Record<string, string> = {};
-  for (const r of rows) map[r.k] = r.v;
-  return map;
+  return rows[0] ?? null;
 }
 
-async function saveState(updates: Record<string, string>) {
-  const entries = Object.entries(updates);
-  if (entries.length === 0) return;
+async function updateSession(
+  sessionId: string,
+  fields: {
+    currentTopicId?: number | null;
+    currentTopicKind?: TopicKind;
+    topicRotatedAt?: Date;
+    topicNormalsPlayed?: number;
+  },
+): Promise<void> {
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  if (fields.currentTopicId !== undefined) {
+    sets.push("current_topic_id = ?");
+    params.push(fields.currentTopicId);
+  }
+  if (fields.currentTopicKind !== undefined) {
+    sets.push("current_topic_kind = ?");
+    params.push(fields.currentTopicKind);
+  }
+  if (fields.topicRotatedAt !== undefined) {
+    sets.push("topic_rotated_at = ?");
+    params.push(fields.topicRotatedAt);
+  }
+  if (fields.topicNormalsPlayed !== undefined) {
+    sets.push("topic_normals_played = ?");
+    params.push(fields.topicNormalsPlayed);
+  }
+  if (sets.length === 0) return;
+  params.push(sessionId);
   const pool = getPool();
-  const placeholders = entries.map(() => "(?, ?)").join(", ");
-  const params = entries.flatMap(([k, v]) => [k, v]);
   await pool.query(
-    `INSERT INTO app_state (k, v) VALUES ${placeholders}
-     ON DUPLICATE KEY UPDATE v = VALUES(v)`,
+    `UPDATE nomikai_sessions SET ${sets.join(", ")} WHERE id = ?`,
     params,
   );
 }
@@ -101,55 +125,50 @@ function fallbackInfo(now: Date): TopicInfo {
   return buildInfo(0, "（話題未設定）", "normal", now, now);
 }
 
-export async function getCurrentTopic(): Promise<TopicInfo> {
+export async function getCurrentTopic(sessionId: string | null): Promise<TopicInfo> {
   const now = new Date();
-  const state = await readState();
+  if (!sessionId) return fallbackInfo(now);
 
-  const storedId = state[KEY_TOPIC_ID] ? Number(state[KEY_TOPIC_ID]) : null;
-  const storedKindRaw = state[KEY_TOPIC_KIND];
-  const storedKind: TopicKind | null =
-    storedKindRaw === "normal" || storedKindRaw === "order" ? storedKindRaw : null;
-  const storedRotatedAt = state[KEY_ROTATED_AT] ? new Date(state[KEY_ROTATED_AT]) : null;
-  const storedNormals = state[KEY_NORMALS_PLAYED] ? Number(state[KEY_NORMALS_PLAYED]) : 0;
+  await ensureNomikaiSession(sessionId);
+  const session = await readSession(sessionId);
+  if (!session) return fallbackInfo(now);
 
-  const hasState =
-    storedKind !== null &&
-    storedRotatedAt !== null &&
-    !isNaN(storedRotatedAt.getTime());
+  const storedKind = session.current_topic_kind;
+  const storedRotatedAt = session.topic_rotated_at;
+  const storedId = session.current_topic_id;
+  const storedNormals = session.topic_normals_played;
 
-  // 初期化: 通常話題から開始
-  if (!hasState) {
+  // 初期化: topic_rotated_at が NULL なら最初のローテーション扱い
+  if (!storedRotatedAt) {
     const t = await pickRandomTopic();
     if (!t) return fallbackInfo(now);
-    await saveState({
-      [KEY_TOPIC_ID]: String(t.id),
-      [KEY_TOPIC_KIND]: "normal",
-      [KEY_ROTATED_AT]: now.toISOString(),
-      [KEY_NORMALS_PLAYED]: "1",
+    await updateSession(sessionId, {
+      currentTopicId: t.id,
+      currentTopicKind: "normal",
+      topicRotatedAt: now,
+      topicNormalsPlayed: 1,
     });
     return buildInfo(t.id, t.text, "normal", now, now);
   }
 
-  const currentDuration = durationFor(storedKind!);
-  const expired = now.getTime() - storedRotatedAt!.getTime() >= currentDuration;
+  const currentDuration = durationFor(storedKind);
+  const expired = now.getTime() - storedRotatedAt.getTime() >= currentDuration;
 
   // 期限内: 現状を返す
   if (!expired) {
     if (storedKind === "order") {
-      return buildInfo(0, ORDER_TIME_TEXT, "order", storedRotatedAt!, now);
+      return buildInfo(0, ORDER_TIME_TEXT, "order", storedRotatedAt, now);
     }
     const t = storedId ? await getTopicById(storedId) : null;
-    if (t) {
-      return buildInfo(t.id, t.text, "normal", storedRotatedAt!, now);
-    }
-    // DBから消えていた → 引き直し（即時ローテーション扱い）
+    if (t) return buildInfo(t.id, t.text, "normal", storedRotatedAt, now);
+    // 話題が削除されていた → 即時引き直し
     const fresh = await pickRandomTopic();
     if (!fresh) return fallbackInfo(now);
-    await saveState({
-      [KEY_TOPIC_ID]: String(fresh.id),
-      [KEY_TOPIC_KIND]: "normal",
-      [KEY_ROTATED_AT]: now.toISOString(),
-      [KEY_NORMALS_PLAYED]: "1",
+    await updateSession(sessionId, {
+      currentTopicId: fresh.id,
+      currentTopicKind: "normal",
+      topicRotatedAt: now,
+      topicNormalsPlayed: 1,
     });
     return buildInfo(fresh.id, fresh.text, "normal", now, now);
   }
@@ -158,32 +177,33 @@ export async function getCurrentTopic(): Promise<TopicInfo> {
   if (storedKind === "normal") {
     if (storedNormals >= NORMALS_BEFORE_ORDER) {
       // 通常 → 追加注文タイム
-      await saveState({
-        [KEY_TOPIC_KIND]: "order",
-        [KEY_ROTATED_AT]: now.toISOString(),
+      await updateSession(sessionId, {
+        currentTopicKind: "order",
+        currentTopicId: null,
+        topicRotatedAt: now,
       });
       return buildInfo(0, ORDER_TIME_TEXT, "order", now, now);
     }
     // 通常 → 次の通常話題
     const t = await pickRandomTopicExcluding(storedId ?? 0);
     if (!t) return fallbackInfo(now);
-    await saveState({
-      [KEY_TOPIC_ID]: String(t.id),
-      [KEY_TOPIC_KIND]: "normal",
-      [KEY_ROTATED_AT]: now.toISOString(),
-      [KEY_NORMALS_PLAYED]: String(storedNormals + 1),
+    await updateSession(sessionId, {
+      currentTopicId: t.id,
+      currentTopicKind: "normal",
+      topicRotatedAt: now,
+      topicNormalsPlayed: storedNormals + 1,
     });
     return buildInfo(t.id, t.text, "normal", now, now);
   }
 
-  // 追加注文 → 新しい通常話題（カウンタは 1 にリセット）
+  // 追加注文 → 新しい通常話題（カウンタ 1 リセット）
   const t = await pickRandomTopic();
   if (!t) return fallbackInfo(now);
-  await saveState({
-    [KEY_TOPIC_ID]: String(t.id),
-    [KEY_TOPIC_KIND]: "normal",
-    [KEY_ROTATED_AT]: now.toISOString(),
-    [KEY_NORMALS_PLAYED]: "1",
+  await updateSession(sessionId, {
+    currentTopicId: t.id,
+    currentTopicKind: "normal",
+    topicRotatedAt: now,
+    topicNormalsPlayed: 1,
   });
   return buildInfo(t.id, t.text, "normal", now, now);
 }

@@ -21,7 +21,7 @@ export default async function HomePage() {
   const nomikaiSessionId = await getNomikaiSessionId();
   const [characters, topic, messages] = await Promise.all([
     loadCharacters(),
-    getCurrentTopic(),
+    getCurrentTopic(nomikaiSessionId),
     getRecentConversations(nomikaiSessionId, 30),
   ]);
   return (

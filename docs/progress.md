@@ -1,6 +1,6 @@
 # hinayoi 開発進捗
 
-最終更新: 2026-05-23（APNG対応 + 話題ローテ不具合修正 + 表示サイズ調整）
+最終更新: 2026-05-28（飲み会セッション導入 + 複数アカウント対応 + 追加注文タイム + per-session state 化）
 
 仕様書: [docs/hinayoi.md](./hinayoi.md)
 TTS仕様: [docs/elevenlabs-tts-api.md](./elevenlabs-tts-api.md)
@@ -90,6 +90,74 @@ TTS仕様: [docs/elevenlabs-tts-api.md](./elevenlabs-tts-api.md)
 - [x] 権限エラー / マイク無し のメッセージ表示
 - [x] アンマウント時に確実に停止
 
+### 飲み会セッション・複数アカウント・追加注文タイム・per-session 化（2026-05-28）
+
+#### 飲み会セッション
+- [x] `hinayoi_nomikai` cookie（UUID, ブラウザセッションクッキー）を middleware で発行
+- [x] ブラウザ再起動で新 ID, リロードでは継続
+- [x] `conversations.nomikai_session_id` カラム追加。`getRecentConversations` でセッション内のみ取得
+- [x] turn 生成のプロンプト履歴も現セッションのみに限定
+
+#### 複数アカウント対応
+- [x] `users.nickname` カラム追加（DEFAULT ''）
+- [x] CLI: `scripts/add-user.mjs`（`node --env-file=.env.local scripts/add-user.mjs <loginId> <password> <nickname>`）
+- [x] `SessionPayload.nickname` を追加し JWT に乗せる（旧JWT互換: nickname無いなら login_id をフォールバック）
+- [x] `USER_SPEAKER_NAME="とみん"` のハードコードを廃止 → `session.nickname` を speaker_name に保存
+- [x] prompts/*.md に `{nickname}` プレースホルダ。turn.ts で common/persona に置換
+- [x] sanitizeText の接頭辞除去 regex から `とみん` を削除
+
+#### 追加注文タイム（話題切替フック）
+- [x] 通常話題 4 分 × 3回 → 追加注文タイム 30 秒 → 新しい通常 4 分 …のループ
+- [x] 追加注文タイムでは topicId=0, text="追加注文タイム", kind="order" を返す
+- [x] turn.ts のプロンプト分岐
+  - order 中: 「## 【最優先】追加注文タイム」（注文セリフのみ、互いに何を頼むか聞く流れ）
+  - post-order 検出（直近キャラ発言の topicId が NULL && 現在 normal）: 「## 【最優先】話題切替」を入れる
+- [x] `ChatTopic.kind` を型に追加
+
+#### per-session 状態化（B案、複数同時利用対応）
+- [x] 新テーブル `nomikai_sessions`（current_topic_id/kind, topic_rotated_at, topic_normals_played, points_last_tick_at）
+- [x] 新テーブル `nomikai_session_character_points`（session × character の pt 行）
+- [x] `characters.points` カラム廃止（DROP）
+- [x] `app_state` の topic 系・points 系キーは廃止（DELETE 対象）
+- [x] `lib/nomikai.ts` に `ensureNomikaiSession(sessionId)` を追加。INSERT IGNORE + 初期 pt 0–100 乱数 seed
+- [x] `lib/topic.ts` / `lib/points.ts` の全 public API に `sessionId` 引数を伝播
+- [x] page.tsx と全 API ルートで cookie 経由の sessionId を配線
+
+#### マイグレーション SQL（既存DBに対し一度だけ実行）
+```sql
+ALTER TABLE users ADD COLUMN nickname VARCHAR(32) NOT NULL DEFAULT '' AFTER login_id;
+UPDATE users SET nickname='とみん' WHERE id=1;  -- 既存ユーザーのニックネーム埋め
+
+ALTER TABLE conversations
+  ADD COLUMN nomikai_session_id VARCHAR(36) NULL AFTER topic_id,
+  ADD KEY idx_conversations_nomikai_session (nomikai_session_id, id);
+
+CREATE TABLE nomikai_sessions (
+  id VARCHAR(36) NOT NULL,
+  user_id INT UNSIGNED NULL,
+  current_topic_id INT UNSIGNED NULL,
+  current_topic_kind ENUM('normal','order') NOT NULL DEFAULT 'normal',
+  topic_rotated_at DATETIME(3) NULL,
+  topic_normals_played INT UNSIGNED NOT NULL DEFAULT 0,
+  points_last_tick_at DATETIME(3) NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE nomikai_session_character_points (
+  nomikai_session_id VARCHAR(36) NOT NULL,
+  character_id INT UNSIGNED NOT NULL,
+  points INT NOT NULL DEFAULT 0,
+  PRIMARY KEY (nomikai_session_id, character_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+ALTER TABLE characters DROP COLUMN points;
+DELETE FROM app_state WHERE k IN (
+  'points_initialized', 'points_last_tick_at',
+  'current_topic_id', 'current_topic_kind', 'topic_rotated_at', 'topic_normals_played'
+);
+```
+
 ### APNG対応・表示調整・話題ローテ修正（2026-05-23）
 - [x] キャラ画像を `{slug}_default.png` / `{slug}_talk.png` の2系統に分離（ChatRoom.tsx の CharacterColumn）
   - 通常時は `_default`、`currentSpeech.slug === c.slug` の間だけ `_talk` に差し替え
@@ -124,20 +192,22 @@ TTS仕様: [docs/elevenlabs-tts-api.md](./elevenlabs-tts-api.md)
 │   ├── hinayoi.md            # 仕様書
 │   ├── elevenlabs-tts-api.md
 │   └── progress.md           # ← このファイル
-├── prompts/                  # 後で本文差し込み
+├── prompts/                  # キャラ性格設定（{nickname} 置換対応）
 │   ├── common.md
 │   ├── hina.md
 │   ├── koharu.md
 │   ├── misaki.md
 │   └── hiyori.md
+├── scripts/
+│   └── add-user.mjs          # ユーザー追加CLI（node --env-file=.env.local で実行）
 ├── sql/schema.sql
 ├── public/sozai -> /home/ec2-user/sozai
 ├── src/
-│   ├── middleware.ts
+│   ├── middleware.ts         # 認証 + hinayoi_nomikai cookie 発行
 │   ├── app/
 │   │   ├── layout.tsx
 │   │   ├── globals.css
-│   │   ├── page.tsx                  # サーバ：初期データ取得 → ChatRoomへ
+│   │   ├── page.tsx                  # サーバ：初期データ取得（sessionId 経由）→ ChatRoomへ
 │   │   ├── ChatRoom.tsx              # クライアント：話題/履歴/入力/ターンループ
 │   │   ├── LogoutButton.tsx
 │   │   ├── login/page.tsx
@@ -146,20 +216,21 @@ TTS仕様: [docs/elevenlabs-tts-api.md](./elevenlabs-tts-api.md)
 │   │       ├── auth/logout/route.ts
 │   │       ├── topic/current/route.ts
 │   │       ├── conversations/route.ts
-│   │       ├── points/route.ts        # GET 現在ポイント
-│   │       ├── turn/next/route.ts     # POST 1ターン進行
-│   │       └── tts/route.ts           # POST 音声生成プロキシ
+│   │       ├── points/route.ts
+│   │       ├── turn/next/route.ts
+│   │       └── tts/route.ts
 │   └── lib/
 │       ├── db.ts             # mysql2 プール
 │       ├── password.ts       # scrypt
-│       ├── session.ts        # JWT Cookie
-│       ├── topic.ts          # 4分ローテ管理
-│       ├── conversation.ts   # 履歴 GET/INSERT
+│       ├── session.ts        # JWT Cookie（nickname 同梱）
+│       ├── nomikai.ts        # 飲み会セッション cookie 読み + ensureNomikaiSession
+│       ├── topic.ts          # 話題ローテ（通常4分 / 追加注文30秒、per-session）
+│       ├── conversation.ts   # 履歴 GET/INSERT（nomikai_session_id 必須）
 │       ├── replacements.ts   # ASR/TTS 置換、30sキャッシュ
-│       ├── points.ts         # tick / +100 / -100 / 話者選定
+│       ├── points.ts         # tick / +100 / -100 / 話者選定（per-session）
 │       ├── prompts.ts        # prompts/*.md 読み込み（5sキャッシュ）
 │       ├── gemini.ts         # gemini-3.5-flash REST
-│       └── turn.ts           # 1ターン進行ロジック
+│       └── turn.ts           # 1ターン進行（order/post-order プロンプト分岐）
 └── .env.local                # 機密。DB / SESSION / GEMINI / ELEVENLABS
 ```
 
@@ -189,24 +260,24 @@ TTS仕様: [docs/elevenlabs-tts-api.md](./elevenlabs-tts-api.md)
 
 ## 現在のセッション状態（次回再開時の参照用）
 
-- dev サーバ：ポート 7500 でバックグラウンド稼働中（`/tmp/hinayoi-dev.log`にログ）
-- ALB設定済み、ブラウザから接続可能
-- ログイン情報：`admin` / `hinayoi2026`
-- ポイントtick：10秒あたり **+1**（旧+15から下方修正済み）
-- ユーザーによるポイント手動リセット実施済み
-- 「TICK_GAIN=1」の挙動確認：いい感じに会話してくれることをユーザー確認済み
-- TTS再生：ユーザー画面で確認済み
-- 音声入力：実装完了 / ブラウザ側マイクでの動作確認は次回ユーザー側で実施予定
+- dev サーバ：ポート 7500
+- ログインユーザー（DB現状）
+  - `admin` / nickname=`との`
+  - `tomi` / nickname=`とみん`
+- 話題ローテ：通常 4 分、追加注文タイム 30 秒（3 通常 → 1 追加注文）
+- ポイントtick：10秒あたり +10
+- 飲み会セッション: ブラウザ起動で新規 UUID, リロードで継続
+- 直前の不具合: 「音声が出ない」→ Windows のオーディオ出力デバイス切替に起因（おま環）、Windows 再起動で対処予定
 
-### Git 状態（2026-05-22 打ち合わせ前時点）
+### Git 状態（2026-05-28 時点・打ち合わせ前から大量に未コミット）
 
-- 既存コミット: `8cd154c first commit` → `b84e458 char talk`
-- **未コミットの変更**（ステップ4+5 の成果）
-  - `M docs/progress.md`
-  - `M src/app/ChatRoom.tsx` （TTS再生 + タイプライター + 音声入力）
-  - `M src/lib/points.ts` （TICK_GAIN 15→1）
-  - `?? src/app/api/tts/` （新規TTSルート）
-- 次回コミットする際は、最低限ステップ4（TTS）とステップ5（音声入力）を分けると履歴が読みやすい
+- 既存コミット最新: `092d5ea 20260526_01`
+- 未コミットの変更（今日の作業）
+  - 飲み会セッション導入（cookie、conversations 紐付け）
+  - 複数アカウント対応（nickname カラム、CLI、JWT 拡張）
+  - 追加注文タイム（topic 種別 + プロンプト分岐）
+  - per-session state 化（nomikai_sessions / nomikai_session_character_points 新設、`characters.points` 廃止）
+- 既存DBへの ALTER/CREATE/ALTER/DELETE は実行済み（ユーザー手動）
 
 ---
 
@@ -218,3 +289,6 @@ TTS仕様: [docs/elevenlabs-tts-api.md](./elevenlabs-tts-api.md)
 4. **話題（topics）の追加**：現在5件のみ
 5. **APNG / 口パク等の演出**：素材があれば差し替え
 6. **長時間運用テスト**：レートリミット観察・コスト確認
+7. **話題切替の通常4分が一時的に短縮中**: `src/lib/topic.ts` の `NORMAL_DURATION_MS` を本番値に戻す（4分）
+8. **古いセッション行のクリーンアップ**: `nomikai_sessions` を期限切れで掃除する仕組み（任意）
+9. **ラストオーダー/終了イベント**: 飲み会の幕引きフックは未実装
