@@ -57,6 +57,13 @@ export async function runTurn(
 ): Promise<TurnResult> {
   await catchupTick(nomikaiSessionId);
   const topic = await getCurrentTopic(nomikaiSessionId);
+
+  // 飲み会終了済み: 以降の発話は生成しない
+  if (topic.kind === "ended") {
+    const points = await getAllPoints(nomikaiSessionId);
+    return { spoke: null, points: projectPoints(points), topic: { topicId: topic.topicId, text: topic.text } };
+  }
+
   const speaker = await pickSpeaker(nomikaiSessionId);
 
   if (!speaker) {
@@ -81,7 +88,15 @@ export async function runTurn(
     topic.kind === "normal" && lastCharMessage?.topicId === null;
 
   const priorityBlock: string[] = [];
-  if (topic.kind === "order") {
+  if (topic.kind === "closing") {
+    priorityBlock.push(
+      "## 【最優先】飲み会終了（締めの挨拶）",
+      "- 飲み会が終わるので、締めの挨拶の会話に徐々に移行してください。",
+      "- 今日を振り返って楽しかった気持ちや名残惜しさ、ユーザーや他のキャラへの感謝、",
+      "- 締めの挨拶、再会を希望する言葉を会話に盛り込んでください。。",
+      "",
+    );
+  } else if (topic.kind === "order") {
     priorityBlock.push(
       "## 【最優先】追加注文タイム",
       "- 今は追加注文タイムです。今までの話題から、追加の飲み物または食べ物を注文する話に行移行してください",

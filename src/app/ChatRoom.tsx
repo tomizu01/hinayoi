@@ -40,10 +40,11 @@ export type ChatCharacter = {
 export type ChatTopic = {
   topicId: number;
   text: string;
-  kind: "normal" | "order";
+  kind: "normal" | "order" | "closing" | "ended";
   rotatedAt: string;
   nextRotateAt: string;
   now: string;
+  sessionEndAt: string;
 };
 
 export type ChatMessage = {
@@ -181,9 +182,34 @@ export default function ChatRoom(props: {
     };
   }, []);
 
+  const isEnded = topic.kind === "ended";
+  const isClosing = topic.kind === "closing";
+
+  // 飲み会終了になったら音声認識・自動進行をすべて止める
+  useEffect(() => {
+    if (!isEnded) return;
+    isListeningRef.current = false;
+    setIsListening(false);
+    setInterim("");
+    const rec = recognitionRef.current;
+    recognitionRef.current = null;
+    if (rec) {
+      rec.onend = null;
+      rec.onresult = null;
+      rec.onerror = null;
+      try {
+        rec.stop();
+      } catch {
+        /* noop */
+      }
+    }
+    setIsRunning(false);
+  }, [isEnded]);
+
   // ターン自動進行ループ（TTS再生終了で次へ）
   useEffect(() => {
     if (!isRunning) return;
+    if (isEnded) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let activeAudio: HTMLAudioElement | null = null;
@@ -355,13 +381,20 @@ export default function ChatRoom(props: {
       }
       setCurrentSpeech(null);
     };
-  }, [isRunning]);
+  }, [isRunning, isEnded]);
 
   const rotatedAtMs = new Date(topic.rotatedAt).getTime();
   const nextAtMs = new Date(topic.nextRotateAt).getTime();
   const totalMs = Math.max(1, nextAtMs - rotatedAtMs);
   const progressPct = Math.min(100, Math.max(0, ((now - rotatedAtMs) / totalMs) * 100));
   const remainSec = Math.max(0, Math.ceil((nextAtMs - now) / 1000));
+
+  // 飲み会セッション全体の残り時間
+  const sessionEndMs = new Date(topic.sessionEndAt).getTime();
+  const sessionRemainMs = Math.max(0, sessionEndMs - now);
+  // 通常/追加注文タイム中、かつ残り5分以下の場合に「残り5分」を予告表示する
+  const showFiveMinWarning =
+    !isClosing && !isEnded && sessionRemainMs > 0 && sessionRemainMs <= 5 * 60 * 1000;
 
   const left = useMemo(() => props.characters.filter((c) => c.position <= 2), [props.characters]);
   const right = useMemo(() => props.characters.filter((c) => c.position >= 3), [props.characters]);
@@ -537,6 +570,15 @@ export default function ChatRoom(props: {
         backgroundPosition: "center",
       }}
     >
+      {/* 左上 残り時間警告（残り5分以下で表示） */}
+      {showFiveMinWarning && (
+        <div className="absolute top-3 left-4 z-20 select-none animate-pulse">
+          <div className="bg-black/80 border-2 border-red-400 text-red-400 font-bold px-4 py-2 rounded-md shadow-lg" style={{ fontSize: "1.5rem" }}>
+            ⚠ お会計まで残り5分
+          </div>
+        </div>
+      )}
+
       {/* 右上 セッション + 開始/停止 + ログアウト */}
       <div className="absolute top-3 right-4 flex items-center gap-3 text-sm text-white/80 z-10">
         <span>user: {props.login}</span>
@@ -617,20 +659,21 @@ export default function ChatRoom(props: {
           onChange={(e) => setInput(e.target.value)}
           placeholder="メッセージを入力..."
           className="flex-1 h-12 px-4 rounded bg-black/60 border border-white/25 text-lg focus:outline-none focus:border-white/60"
-          disabled={sending}
+          disabled={sending || isEnded}
           maxLength={500}
         />
         <button
           type="submit"
           className="h-12 px-6 rounded bg-white text-black font-semibold disabled:opacity-50"
-          disabled={sending || input.trim().length === 0}
+          disabled={sending || isEnded || input.trim().length === 0}
         >
           {sending ? "送信中..." : "入力"}
         </button>
         <button
           type="button"
           onClick={toggleListening}
-          className={`h-12 px-6 rounded font-semibold border transition-colors ${
+          disabled={isEnded}
+          className={`h-12 px-6 rounded font-semibold border transition-colors disabled:opacity-50 ${
             isListening
               ? "bg-red-600 text-white border-red-300 ring-2 ring-red-300/60 animate-pulse"
               : "bg-red-500 text-white border-red-300/40 hover:bg-red-600"
@@ -641,6 +684,15 @@ export default function ChatRoom(props: {
         </button>
         {sendError && <span className="text-red-300 text-sm ml-2">{sendError}</span>}
       </form>
+
+      {/* 飲み会終了オーバーレイ */}
+      {isEnded && (
+        <div className="absolute inset-0 bg-black/55 z-50 flex items-center justify-center">
+          <div className="text-white text-5xl font-bold tracking-wide drop-shadow-lg">
+            この飲み会は終了しました
+          </div>
+        </div>
+      )}
     </div>
   );
 }

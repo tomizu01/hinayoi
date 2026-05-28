@@ -40,6 +40,9 @@ export async function POST(req: Request) {
 
   const nomikaiSessionId = await getNomikaiSessionId();
   const topic = await getCurrentTopic(nomikaiSessionId);
+  if (topic.kind === "ended") {
+    return NextResponse.json({ error: "この飲み会は終了しました" }, { status: 403 });
+  }
   const speakerName = session.nickname;
   // ポイントtickをキャッチアップ → 保存 → 名前+100（ユーザーは自分判定対象外なので全員チェック）
   await catchupTick(nomikaiSessionId);

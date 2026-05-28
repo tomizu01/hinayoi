@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS nomikai_sessions (
   id VARCHAR(36) NOT NULL,
   user_id INT UNSIGNED NULL,
   current_topic_id INT UNSIGNED NULL,
-  current_topic_kind ENUM('normal','order') NOT NULL DEFAULT 'normal',
+  current_topic_kind ENUM('normal','order','closing','ended') NOT NULL DEFAULT 'normal',
   topic_rotated_at DATETIME(3) NULL,
   topic_normals_played INT UNSIGNED NOT NULL DEFAULT 0,
   points_last_tick_at DATETIME(3) NULL,
@@ -114,6 +114,10 @@ INSERT IGNORE INTO characters (slug, display_name, voice_id, image_file, positio
 --     'points_initialized', 'points_last_tick_at',
 --     'current_topic_id', 'current_topic_kind', 'topic_rotated_at', 'topic_normals_played'
 --   );
+
+-- 既存DB移行: ラストオーダー/終了イベント対応 (一度だけ実行):
+--   ALTER TABLE nomikai_sessions
+--     MODIFY current_topic_kind ENUM('normal','order','closing','ended') NOT NULL DEFAULT 'normal';
 
 -- seed: topics (placeholder, 後で増やせる)
 INSERT IGNORE INTO topics (id, text) VALUES
