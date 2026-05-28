@@ -13,6 +13,7 @@ function getSecret(): Uint8Array {
 export type SessionPayload = {
   uid: number;
   login: string;
+  nickname: string;
 };
 
 export async function createSessionCookie(payload: SessionPayload): Promise<string> {
@@ -30,7 +31,12 @@ export async function readSession(): Promise<SessionPayload | null> {
   try {
     const { payload } = await jwtVerify(token, getSecret());
     if (typeof payload.uid === "number" && typeof payload.login === "string") {
-      return { uid: payload.uid, login: payload.login };
+      // 旧JWT互換: nickname が無い場合は login_id をフォールバック
+      const nickname =
+        typeof payload.nickname === "string" && payload.nickname.length > 0
+          ? payload.nickname
+          : payload.login;
+      return { uid: payload.uid, login: payload.login, nickname };
     }
     return null;
   } catch {

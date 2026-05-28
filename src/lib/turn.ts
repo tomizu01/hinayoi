@@ -32,7 +32,7 @@ function sanitizeText(raw: string, speakerName: string): string {
   let t = raw.trim();
   // よくある接頭辞除去（"ひな:" "ひな：" "【ひな】" "「" 等）
   t = t.replace(/^[「『"'`]+/, "").replace(/[」』"'`]+$/, "");
-  t = t.replace(/^[【\[]?(?:ひな|こはる|みさき|ひより|とみん)[】\]]?\s*[:：]\s*/u, "");
+  t = t.replace(/^[【\[]?(?:ひな|こはる|みさき|ひより)[】\]]?\s*[:：]\s*/u, "");
   t = t.replace(/^[「『"'`]+/, "").replace(/[」』"'`]+$/, "");
   // 60文字超なら末尾を切る
   if ([...t].length > 60) {
@@ -43,7 +43,18 @@ function sanitizeText(raw: string, speakerName: string): string {
   return t;
 }
 
-export async function runTurn(nomikaiSessionId: string | null): Promise<TurnResult> {
+function applyPromptVars(template: string, vars: Record<string, string>): string {
+  let out = template;
+  for (const [k, v] of Object.entries(vars)) {
+    out = out.replaceAll(`{${k}}`, v);
+  }
+  return out;
+}
+
+export async function runTurn(
+  nomikaiSessionId: string | null,
+  nickname: string,
+): Promise<TurnResult> {
   await catchupTick();
   const topic = await getCurrentTopic();
   const speaker = await pickSpeaker();
@@ -53,11 +64,15 @@ export async function runTurn(nomikaiSessionId: string | null): Promise<TurnResu
     return { spoke: null, points: projectPoints(points), topic: { topicId: topic.topicId, text: topic.text } };
   }
 
-  const [history, common, persona] = await Promise.all([
+  const [history, commonRaw, personaRaw] = await Promise.all([
     getRecentConversations(nomikaiSessionId, 30),
     getCommonPrompt(),
     getCharacterPrompt(speaker.slug),
   ]);
+
+  const promptVars = { nickname };
+  const common = applyPromptVars(commonRaw, promptVars);
+  const persona = applyPromptVars(personaRaw, promptVars);
 
   const systemInstruction = [
     "あなたはAI飲み会アプリのキャラクターとして自然な会話を行います。",

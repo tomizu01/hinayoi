@@ -6,11 +6,17 @@ SET NAMES utf8mb4;
 CREATE TABLE IF NOT EXISTS users (
   id INT UNSIGNED NOT NULL AUTO_INCREMENT,
   login_id VARCHAR(64) NOT NULL,
+  nickname VARCHAR(32) NOT NULL DEFAULT '',
   password_hash VARCHAR(255) NOT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uk_users_login_id (login_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 既存DBの移行:
+--   ALTER TABLE users ADD COLUMN nickname VARCHAR(32) NOT NULL DEFAULT '' AFTER login_id;
+--   -- 既存ユーザーのニックネームを必ず埋めること（空のままだと発話表示が空になる）
+--   UPDATE users SET nickname = 'とみん' WHERE id = 1;
 
 CREATE TABLE IF NOT EXISTS characters (
   id INT UNSIGNED NOT NULL AUTO_INCREMENT,

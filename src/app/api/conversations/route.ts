@@ -6,8 +6,6 @@ import { applyReplacements, getAsrReplacements } from "@/lib/replacements";
 import { getCurrentTopic } from "@/lib/topic";
 import { applyMentionBonus, catchupTick, getAllPoints } from "@/lib/points";
 
-const USER_SPEAKER_NAME = "とみん";
-
 export async function GET(req: Request) {
   const session = await readSession();
   if (!session) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
@@ -42,11 +40,12 @@ export async function POST(req: Request) {
 
   const topic = await getCurrentTopic();
   const nomikaiSessionId = await getNomikaiSessionId();
+  const speakerName = session.nickname;
   // ポイントtickをキャッチアップ → 保存 → 名前+100（ユーザーは自分判定対象外なので全員チェック）
   await catchupTick();
   const id = await insertConversation({
     speakerKind: "user",
-    speakerName: USER_SPEAKER_NAME,
+    speakerName,
     text: replaced,
     topicId: topic.topicId || null,
     nomikaiSessionId,
@@ -57,7 +56,7 @@ export async function POST(req: Request) {
   return NextResponse.json({
     id,
     speakerKind: "user",
-    speakerName: USER_SPEAKER_NAME,
+    speakerName,
     text: replaced,
     topicId: topic.topicId || null,
     points: points.map((p) => ({ slug: p.slug, display_name: p.display_name, points: p.points })),

@@ -7,6 +7,7 @@ import { setSessionCookie } from "@/lib/session";
 type UserRow = RowDataPacket & {
   id: number;
   login_id: string;
+  nickname: string;
   password_hash: string;
 };
 
@@ -21,7 +22,7 @@ export async function POST(req: Request) {
 
   const pool = getPool();
   const [rows] = await pool.query<UserRow[]>(
-    "SELECT id, login_id, password_hash FROM users WHERE login_id = ? LIMIT 1",
+    "SELECT id, login_id, nickname, password_hash FROM users WHERE login_id = ? LIMIT 1",
     [loginId],
   );
 
@@ -35,6 +36,8 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "ログインIDまたはパスワードが違います" }, { status: 401 });
   }
 
-  await setSessionCookie({ uid: user.id, login: user.login_id });
+  // 既存ユーザーで nickname 未設定なら login_id をフォールバック
+  const nickname = user.nickname && user.nickname.length > 0 ? user.nickname : user.login_id;
+  await setSessionCookie({ uid: user.id, login: user.login_id, nickname });
   return NextResponse.json({ ok: true });
 }

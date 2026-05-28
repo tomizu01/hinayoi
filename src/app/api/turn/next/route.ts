@@ -8,7 +8,7 @@ export async function POST() {
   if (!session) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   try {
     const nomikaiSessionId = await getNomikaiSessionId();
-    const result = await runTurn(nomikaiSessionId);
+    const result = await runTurn(nomikaiSessionId, session.nickname);
     return NextResponse.json(result);
   } catch (e) {
     const message = e instanceof Error ? e.message : "unknown error";
