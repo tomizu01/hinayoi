@@ -185,7 +185,8 @@ export default function ChatRoom(props: {
   const isEnded = topic.kind === "ended";
   const isClosing = topic.kind === "closing";
 
-  // 飲み会終了になったら音声認識・自動進行をすべて止める
+  // 飲み会終了になったら音声認識・自動進行をすべて止める。
+  // 発話中のキャラの表情も即座に通常へ戻すため currentSpeech もクリアする。
   useEffect(() => {
     if (!isEnded) return;
     isListeningRef.current = false;
@@ -204,6 +205,7 @@ export default function ChatRoom(props: {
       }
     }
     setIsRunning(false);
+    setCurrentSpeech(null);
   }, [isEnded]);
 
   // ターン自動進行ループ（TTS再生終了で次へ）
@@ -257,6 +259,8 @@ export default function ChatRoom(props: {
         };
         audio.onended = finish;
         audio.onerror = finish;
+        // 外部から audio.pause() された場合（飲み会終了など）も即座に再生待ちを終わらせる
+        audio.onpause = finish;
         if (onStart) audio.onplay = onStart;
         const cap = setTimeout(finish, fallbackMs);
         audio.addEventListener("ended", () => clearTimeout(cap), { once: true });
@@ -305,6 +309,23 @@ export default function ChatRoom(props: {
             // 音声取得失敗時はテキストのみ表示
           }
 
+          // fetchAudio 中に終了状態へ遷移していた場合: 取得済み音声は再生せずに破棄
+          if (cancelled) {
+            if (audio) {
+              try {
+                audio.pause();
+              } catch {
+                /* noop */
+              }
+            }
+            if (activeUrl) {
+              URL.revokeObjectURL(activeUrl);
+              activeUrl = null;
+            }
+            activeAudio = null;
+            break;
+          }
+
           const msgForDisplay: ChatMessage = {
             id: spoke.id,
             speakerKind: "character",
@@ -316,6 +337,8 @@ export default function ChatRoom(props: {
 
           // 音声再生開始時にタイプライタ表示を開始（フェッチ中・再生待ちは何も表示しない）
           const reveal = () => {
+            // クリーンアップ後に reveal が走らないようガード（currentSpeech が再セットされないように）
+            if (cancelled) return;
             setCurrentSpeech({
               slug: spoke.speakerSlug,
               displayName: spoke.speakerName,
