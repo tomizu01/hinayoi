@@ -40,6 +40,7 @@ export type ChatCharacter = {
 export type ChatTopic = {
   topicId: number;
   text: string;
+  kind: "normal" | "order";
   rotatedAt: string;
   nextRotateAt: string;
   now: string;

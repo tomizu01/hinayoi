@@ -74,9 +74,33 @@ export async function runTurn(
   const common = applyPromptVars(commonRaw, promptVars);
   const persona = applyPromptVars(personaRaw, promptVars);
 
+  // 直近のキャラ発言が追加注文タイム中（topicId=null）かつ現在は通常モード
+  // → 注文の流れから通常会話へ戻す高優先指示を入れる
+  const lastCharMessage = [...history].reverse().find((m) => m.speakerKind === "character");
+  const isPostOrderTransition =
+    topic.kind === "normal" && lastCharMessage?.topicId === null;
+
+  const priorityBlock: string[] = [];
+  if (topic.kind === "order") {
+    priorityBlock.push(
+      "## 【最優先】追加注文タイム",
+      "- 今は追加注文タイムです。今までの話題から、追加の飲み物または食べ物を注文する話に行移行してください",
+      "- 自分の好きなものを注文した後に、他のキャラまたはユーザーに何を注文するか聞いてください",
+      "",
+    );
+  } else if (isPostOrderTransition) {
+    priorityBlock.push(
+      "## 【最優先】話題切替",
+      `- 直前まで追加注文タイムでしたが、今は新しい話題「${topic.text}」に切り替わりました。`,
+      "- 注文を終わらせて、新しい話題に沿った会話を自然な流れで始めてください。",
+      "",
+    );
+  }
+
   const systemInstruction = [
     "あなたはAI飲み会アプリのキャラクターとして自然な会話を行います。",
     "",
+    ...priorityBlock,
     "## 共通ルール",
     common,
     "",
